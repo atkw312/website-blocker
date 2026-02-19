@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Focus Blocker",
+  "version": "1.0.0",
+  "description": "Parental/teacher-controlled focus blocker for YouTube channels, Reddit subreddits, and custom sites.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.youtube.com/*",
+    "https://*.reddit.com/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.reddit.com/*"
+      ],
+      "js": ["storage.js", "rules.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Focus Blocker"
+  },
+  "icons": {}
+}
