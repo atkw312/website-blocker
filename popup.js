@@ -11,19 +11,21 @@ const btnEnd = document.getElementById("btn-end");
 
 /** Render the current session state into the popup. */
 async function renderStatus() {
-  const session = await getFocusSession();
-  const active = await isFocusActive();
+  const session = await getActiveSession();
+  const active = await isSessionActive();
 
   if (active) {
     const remaining = Math.max(0, session.endTime - Date.now());
     const minutes = Math.ceil(remaining / 60000);
-    statusEl.textContent = `Session active — ${minutes} min remaining`;
+    statusEl.textContent = `Session active \u2014 ${minutes} min remaining`;
     btnStart.disabled = true;
-    btnEnd.disabled = false;
+    btnEnd.disabled = session.locked;
+    btnEnd.textContent = session.locked ? "Session Locked" : "End Focus Session";
   } else {
     statusEl.textContent = "No active session.";
     btnStart.disabled = false;
     btnEnd.disabled = true;
+    btnEnd.textContent = "End Focus Session";
   }
 }
 
@@ -33,7 +35,11 @@ btnStart.addEventListener("click", async () => {
 });
 
 btnEnd.addEventListener("click", async () => {
-  await endFocusSession();
+  const ended = await endFocusSession();
+  if (!ended) {
+    statusEl.textContent = "Session is locked and cannot be ended.";
+    return;
+  }
   renderStatus();
 });
 

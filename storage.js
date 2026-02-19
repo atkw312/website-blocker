@@ -1,9 +1,8 @@
 /**
  * storage.js — Chrome storage abstraction layer.
  *
- * All persistent state lives in chrome.storage.local under three top-level
- * keys: blockRules, focusSession, and settings.  Every public function
- * returns a Promise so callers can await it.
+ * All persistent state lives in chrome.storage.local.
+ * Schema is preserved for forward-compatibility with the native desktop app.
  */
 
 const DEFAULT_STORAGE = {
@@ -38,11 +37,8 @@ async function initializeStorage() {
   const data = await chrome.storage.local.get(null);
   const merged = { ...DEFAULT_STORAGE };
 
-  // Preserve any keys that already exist so we never blow away user data.
   for (const key of Object.keys(DEFAULT_STORAGE)) {
-    if (data[key] !== undefined) {
-      merged[key] = data[key];
-    }
+    if (data[key] !== undefined) merged[key] = data[key];
   }
 
   await chrome.storage.local.set(merged);
@@ -61,15 +57,31 @@ async function setBlockRules(rules) {
 }
 
 /** Return the current focusSession object. */
-async function getFocusSession() {
+async function getActiveSession() {
   const { focusSession } = await chrome.storage.local.get("focusSession");
   return focusSession ?? DEFAULT_STORAGE.focusSession;
 }
 
 /**
- * Begin a new focus session lasting `durationMinutes` from now.
- * Automatically sets active = true and computes endTime.
+ * Check whether a focus session is currently running.
+ * Auto-expires sessions whose endTime has passed.
+ * Natural expiry bypasses the lock — the session simply ran out.
  */
+async function isSessionActive() {
+  const session = await getActiveSession();
+  if (!session.active) return false;
+
+  if (session.endTime && Date.now() >= session.endTime) {
+    await chrome.storage.local.set({
+      focusSession: { active: false, startTime: null, endTime: null, locked: false }
+    });
+    return false;
+  }
+
+  return true;
+}
+
+/** Begin a new focus session lasting `durationMinutes`. */
 async function startFocusSession(durationMinutes) {
   const now = Date.now();
   const session = {
@@ -82,32 +94,18 @@ async function startFocusSession(durationMinutes) {
   return session;
 }
 
-/** Immediately end the current focus session. */
-async function endFocusSession() {
-  const session = {
-    active: false,
-    startTime: null,
-    endTime: null,
-    locked: false
-  };
-  await chrome.storage.local.set({ focusSession: session });
-  return session;
-}
-
 /**
- * Check whether a focus session is currently running.
- * Automatically expires sessions whose endTime has passed.
+ * Manually end the current focus session.
+ * Returns true if ended successfully, false if the session is locked.
+ * Pass { parentApproved: true } to override a lock (Phase 2 UI).
  */
-async function isFocusActive() {
-  const session = await getFocusSession();
+async function endFocusSession({ parentApproved = false } = {}) {
+  const session = await getActiveSession();
+  if (!session.active) return true;
+  if (session.locked && !parentApproved) return false;
 
-  if (!session.active) return false;
-
-  // Auto-expire elapsed sessions.
-  if (session.endTime && Date.now() >= session.endTime) {
-    await endFocusSession();
-    return false;
-  }
-
+  await chrome.storage.local.set({
+    focusSession: { active: false, startTime: null, endTime: null, locked: false }
+  });
   return true;
 }
