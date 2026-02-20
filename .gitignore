@@ -1,2 +1,4 @@
 version notes/
 .env
+.claude/
+native/target/
