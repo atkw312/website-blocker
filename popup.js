@@ -30,7 +30,8 @@ async function renderStatus() {
   if (active) {
     const remaining = Math.max(0, session.endTime - Date.now());
     const minutes = Math.ceil(remaining / 60000);
-    statusEl.textContent = `Session active \u2014 ${minutes} min remaining`;
+    const scheduled = session.scheduledId ? " (scheduled)" : "";
+    statusEl.textContent = `Session active${scheduled} \u2014 ${minutes} min remaining`;
     btnStart.disabled = true;
     btnEnd.disabled = false;
     btnEnd.textContent = session.locked ? "End Session (PIN Required)" : "End Focus Session";

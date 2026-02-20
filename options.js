@@ -258,3 +258,215 @@ chkRequirePin.addEventListener("change", async () => {
 });
 
 renderParental();
+
+// =========================================================================
+// Session Schedules
+// =========================================================================
+
+const inputScheduleLabel = document.getElementById("input-schedule-label");
+const inputScheduleStart = document.getElementById("input-schedule-start");
+const inputScheduleEnd = document.getElementById("input-schedule-end");
+const btnAddSchedule = document.getElementById("btn-add-schedule");
+const listSchedules = document.getElementById("list-schedules");
+const dayCheckboxes = document.querySelectorAll(".day-checkboxes input[type='checkbox']");
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+async function renderSchedules() {
+  const schedules = await getSchedules();
+  listSchedules.innerHTML = "";
+
+  if (schedules.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No schedules yet.";
+    listSchedules.appendChild(li);
+    return;
+  }
+
+  for (const s of schedules) {
+    const li = document.createElement("li");
+    const days = s.days.map(d => DAY_NAMES[d]).join(", ");
+    const start = String(s.startHour).padStart(2, "0") + ":" + String(s.startMinute).padStart(2, "0");
+    const end = String(s.endHour).padStart(2, "0") + ":" + String(s.endMinute).padStart(2, "0");
+    li.textContent = `${s.label} — ${days} ${start}–${end}`;
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "toggle-btn" + (s.enabled ? "" : " disabled");
+    toggleBtn.textContent = s.enabled ? "Enabled" : "Disabled";
+    toggleBtn.addEventListener("click", async () => {
+      await updateSchedule(s.id, { enabled: !s.enabled });
+      renderSchedules();
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", async () => {
+      await removeSchedule(s.id);
+      renderSchedules();
+    });
+
+    const btnGroup = document.createElement("span");
+    btnGroup.appendChild(toggleBtn);
+    btnGroup.appendChild(removeBtn);
+    li.appendChild(btnGroup);
+    listSchedules.appendChild(li);
+  }
+}
+
+btnAddSchedule.addEventListener("click", async () => {
+  const label = inputScheduleLabel.value.trim();
+  if (!label) { alert("Enter a schedule label."); return; }
+
+  const days = Array.from(dayCheckboxes)
+    .filter(cb => cb.checked)
+    .map(cb => parseInt(cb.value, 10));
+  if (days.length === 0) { alert("Select at least one day."); return; }
+
+  const [startH, startM] = inputScheduleStart.value.split(":").map(Number);
+  const [endH, endM] = inputScheduleEnd.value.split(":").map(Number);
+  const startTotal = startH * 60 + startM;
+  const endTotal = endH * 60 + endM;
+  if (endTotal <= startTotal) { alert("End time must be after start time."); return; }
+
+  await addSchedule({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    label,
+    days,
+    startHour: startH,
+    startMinute: startM,
+    endHour: endH,
+    endMinute: endM,
+    enabled: true
+  });
+
+  inputScheduleLabel.value = "";
+  dayCheckboxes.forEach(cb => cb.checked = false);
+  renderSchedules();
+});
+
+renderSchedules();
+
+// =========================================================================
+// Focus Stats
+// =========================================================================
+
+const statSessions = document.getElementById("stat-sessions");
+const statTime = document.getElementById("stat-time");
+const statStreak = document.getElementById("stat-streak");
+
+async function renderStats() {
+  const stats = await getStats();
+  statSessions.textContent = stats.totalSessions;
+  const hours = Math.floor(stats.totalFocusMinutes / 60);
+  const mins = stats.totalFocusMinutes % 60;
+  statTime.textContent = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  statStreak.textContent = stats.currentStreak;
+}
+
+renderStats();
+
+// =========================================================================
+// Session History
+// =========================================================================
+
+const listHistory = document.getElementById("list-history");
+
+async function renderHistory() {
+  const history = await getSessionHistory();
+  listHistory.innerHTML = "";
+
+  if (history.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No session history yet.";
+    listHistory.appendChild(li);
+    return;
+  }
+
+  const recent = history.slice(-50).reverse();
+  for (const entry of recent) {
+    const li = document.createElement("li");
+    const date = new Date(entry.startTime);
+    const dateStr = date.toLocaleDateString();
+    const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    li.textContent = `${dateStr} ${timeStr} — ${entry.actualMinutes} min`;
+
+    const badge = document.createElement("span");
+    badge.className = "badge " + (entry.completedNaturally ? "completed" : "early");
+    badge.textContent = entry.completedNaturally ? "Completed" : "Ended early";
+    li.appendChild(badge);
+    listHistory.appendChild(li);
+  }
+}
+
+renderHistory();
+
+// =========================================================================
+// Import / Export
+// =========================================================================
+
+const btnExport = document.getElementById("btn-export");
+const btnImport = document.getElementById("btn-import");
+const fileImport = document.getElementById("file-import");
+
+btnExport.addEventListener("click", async () => {
+  const rules = await getBlockRules();
+  const blob = new Blob([JSON.stringify(rules, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "focus-blocker-rules.json";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+btnImport.addEventListener("click", () => {
+  fileImport.click();
+});
+
+fileImport.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const text = await file.text();
+  let imported;
+  try {
+    imported = JSON.parse(text);
+  } catch {
+    alert("Invalid JSON file.");
+    return;
+  }
+
+  if (!imported || typeof imported !== "object") {
+    alert("Invalid block rules format.");
+    return;
+  }
+
+  const current = await getBlockRules();
+
+  // Merge arrays using Set dedup
+  if (imported.youtube) {
+    if (Array.isArray(imported.youtube.blockedChannels)) {
+      current.youtube.blockedChannels = [...new Set([...current.youtube.blockedChannels, ...imported.youtube.blockedChannels])];
+    }
+    if (Array.isArray(imported.youtube.allowedChannels)) {
+      current.youtube.allowedChannels = [...new Set([...current.youtube.allowedChannels, ...imported.youtube.allowedChannels])];
+    }
+  }
+  if (imported.reddit) {
+    if (Array.isArray(imported.reddit.blockedSubreddits)) {
+      current.reddit.blockedSubreddits = [...new Set([...current.reddit.blockedSubreddits, ...imported.reddit.blockedSubreddits])];
+    }
+    if (Array.isArray(imported.reddit.allowedSubreddits)) {
+      current.reddit.allowedSubreddits = [...new Set([...current.reddit.allowedSubreddits, ...imported.reddit.allowedSubreddits])];
+    }
+  }
+  if (Array.isArray(imported.blockedSites)) {
+    current.blockedSites = [...new Set([...current.blockedSites, ...imported.blockedSites])];
+  }
+
+  await setBlockRules(current);
+  alert("Rules imported successfully.");
+  location.reload();
+});

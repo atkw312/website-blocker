@@ -21,13 +21,24 @@ const DEFAULT_STORAGE = {
     active: false,
     startTime: null,
     endTime: null,
-    locked: false
+    locked: false,
+    scheduledId: null
   },
   settings: {
     strictMode: false,
     requireParentUnlock: false,
     parentPinHash: null,
     sessionDurationMinutes: 30
+  },
+  schedules: [],
+  // { id, label, days: [0-6], startHour, startMinute, endHour, endMinute, enabled }
+  sessionHistory: [],
+  // { startTime, endTime, durationMinutes, actualMinutes, completedNaturally, scheduledId }
+  stats: {
+    totalSessions: 0,
+    totalFocusMinutes: 0,
+    currentStreak: 0,
+    lastSessionDate: null   // "YYYY-MM-DD" local date
   }
 };
 
@@ -104,9 +115,7 @@ async function isSessionActive() {
   if (!session.active) return false;
 
   if (session.endTime && Date.now() >= session.endTime) {
-    await chrome.storage.local.set({
-      focusSession: { active: false, startTime: null, endTime: null, locked: false }
-    });
+    await endFocusSession({ natural: true });
     return false;
   }
 
@@ -114,31 +123,136 @@ async function isSessionActive() {
 }
 
 /** Begin a new focus session lasting `durationMinutes`. */
-async function startFocusSession(durationMinutes) {
+async function startFocusSession(durationMinutes, { scheduledId } = {}) {
   const settings = await getSettings();
   const now = Date.now();
   const session = {
     active: true,
     startTime: now,
     endTime: now + durationMinutes * 60 * 1000,
-    locked: settings.requireParentUnlock && !!settings.parentPinHash
+    locked: settings.requireParentUnlock && !!settings.parentPinHash,
+    scheduledId: scheduledId ?? null
   };
   await chrome.storage.local.set({ focusSession: session });
   return session;
 }
 
 /**
- * Manually end the current focus session.
+ * End the current focus session.
  * Returns true if ended successfully, false if the session is locked.
- * Pass { parentApproved: true } to override a lock (Phase 2 UI).
+ * Pass { parentApproved: true } to override a lock.
+ * Pass { natural: true } when the timer expires — bypasses lock and marks as completed naturally.
  */
-async function endFocusSession({ parentApproved = false } = {}) {
+async function endFocusSession({ parentApproved = false, natural = false } = {}) {
   const session = await getActiveSession();
   if (!session.active) return true;
-  if (session.locked && !parentApproved) return false;
+  if (!natural && session.locked && !parentApproved) return false;
+
+  // Record session history and update stats before clearing
+  const now = Date.now();
+  const actualMinutes = Math.round((now - session.startTime) / 60000);
+  const durationMinutes = Math.round((session.endTime - session.startTime) / 60000);
+
+  await recordSession({
+    startTime: session.startTime,
+    endTime: now,
+    durationMinutes,
+    actualMinutes,
+    completedNaturally: natural,
+    scheduledId: session.scheduledId ?? null
+  });
+  await updateStatsAfterSession(actualMinutes);
 
   await chrome.storage.local.set({
-    focusSession: { active: false, startTime: null, endTime: null, locked: false }
+    focusSession: { active: false, startTime: null, endTime: null, locked: false, scheduledId: null }
   });
   return true;
+}
+
+// =========================================================================
+// Schedules CRUD
+// =========================================================================
+
+async function getSchedules() {
+  const { schedules } = await chrome.storage.local.get("schedules");
+  return schedules ?? DEFAULT_STORAGE.schedules;
+}
+
+async function setSchedules(schedules) {
+  await chrome.storage.local.set({ schedules });
+}
+
+async function addSchedule(schedule) {
+  const schedules = await getSchedules();
+  schedules.push(schedule);
+  await setSchedules(schedules);
+}
+
+async function removeSchedule(id) {
+  const schedules = await getSchedules();
+  await setSchedules(schedules.filter(s => s.id !== id));
+}
+
+async function updateSchedule(id, updates) {
+  const schedules = await getSchedules();
+  const idx = schedules.findIndex(s => s.id === id);
+  if (idx !== -1) {
+    schedules[idx] = { ...schedules[idx], ...updates };
+    await setSchedules(schedules);
+  }
+}
+
+// =========================================================================
+// Session history
+// =========================================================================
+
+const MAX_HISTORY_ENTRIES = 200;
+
+async function getSessionHistory() {
+  const { sessionHistory } = await chrome.storage.local.get("sessionHistory");
+  return sessionHistory ?? DEFAULT_STORAGE.sessionHistory;
+}
+
+async function recordSession(record) {
+  const history = await getSessionHistory();
+  history.push(record);
+  while (history.length > MAX_HISTORY_ENTRIES) {
+    history.shift();
+  }
+  await chrome.storage.local.set({ sessionHistory: history });
+}
+
+// =========================================================================
+// Stats
+// =========================================================================
+
+async function getStats() {
+  const { stats } = await chrome.storage.local.get("stats");
+  return stats ?? DEFAULT_STORAGE.stats;
+}
+
+/** Returns "YYYY-MM-DD" in local timezone. */
+function getLocalDateString(date) {
+  return date.toLocaleDateString("sv");
+}
+
+async function updateStatsAfterSession(actualMinutes) {
+  const stats = await getStats();
+  stats.totalSessions += 1;
+  stats.totalFocusMinutes += actualMinutes;
+
+  const today = getLocalDateString(new Date());
+  if (stats.lastSessionDate === today) {
+    // Already logged a session today — streak unchanged
+  } else {
+    const yesterday = getLocalDateString(new Date(Date.now() - 86400000));
+    if (stats.lastSessionDate === yesterday) {
+      stats.currentStreak += 1;
+    } else {
+      stats.currentStreak = 1;
+    }
+    stats.lastSessionDate = today;
+  }
+
+  await chrome.storage.local.set({ stats });
 }

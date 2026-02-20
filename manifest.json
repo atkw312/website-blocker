@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Focus Blocker",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Precision YouTube channel blocker with focus session management.",
   "permissions": [
     "storage",
     "nativeMessaging",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "https://*.youtube.com/*"

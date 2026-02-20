@@ -106,6 +106,69 @@
       margin-bottom: 0.75rem;
       display: none;
     }
+    .day-checkboxes {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+    .day-checkboxes label {
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.2rem;
+    }
+    .time-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .time-row input[type="time"] {
+      padding: 0.3rem 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: bold;
+      color: #4361ee;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      text-align: center;
+    }
+    .stats-grid .stat-label {
+      font-size: 0.8rem;
+      color: #666;
+      margin-top: 0.2rem;
+    }
+    ul li .badge {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      margin-left: 0.5rem;
+    }
+    ul li .badge.completed { background: #d4edda; color: #155724; }
+    ul li .badge.early { background: #fff3cd; color: #856404; }
+    button.secondary {
+      background: #6c757d;
+    }
+    .toggle-btn {
+      background: #28a745;
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
+      margin-right: 0.25rem;
+    }
+    .toggle-btn.disabled {
+      background: #adb5bd;
+    }
   </style>
 </head>
 <body>
@@ -150,6 +213,30 @@
     </div>
   </section>
 
+  <section>
+    <h2>Session Schedules</h2>
+    <div class="input-row">
+      <input type="text" id="input-schedule-label" placeholder="Schedule label">
+    </div>
+    <div class="day-checkboxes">
+      <label><input type="checkbox" value="1"> Mon</label>
+      <label><input type="checkbox" value="2"> Tue</label>
+      <label><input type="checkbox" value="3"> Wed</label>
+      <label><input type="checkbox" value="4"> Thu</label>
+      <label><input type="checkbox" value="5"> Fri</label>
+      <label><input type="checkbox" value="6"> Sat</label>
+      <label><input type="checkbox" value="0"> Sun</label>
+    </div>
+    <div class="time-row">
+      <span>Start</span>
+      <input type="time" id="input-schedule-start" value="09:00">
+      <span>End</span>
+      <input type="time" id="input-schedule-end" value="10:00">
+    </div>
+    <button id="btn-add-schedule">Add Schedule</button>
+    <ul id="list-schedules"></ul>
+  </section>
+
   <section id="section-parental">
     <h2>Parental Controls</h2>
     <div class="setting-row">
@@ -161,6 +248,38 @@
     <div class="btn-group">
       <button id="btn-set-pin">Set PIN</button>
       <button id="btn-remove-pin" class="danger" disabled>Remove PIN</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Focus Stats</h2>
+    <div class="stats-grid" id="stats-grid">
+      <div>
+        <div class="stat-value" id="stat-sessions">0</div>
+        <div class="stat-label">Total Sessions</div>
+      </div>
+      <div>
+        <div class="stat-value" id="stat-time">0m</div>
+        <div class="stat-label">Focus Time</div>
+      </div>
+      <div>
+        <div class="stat-value" id="stat-streak">0</div>
+        <div class="stat-label">Day Streak</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Session History</h2>
+    <ul id="list-history"></ul>
+  </section>
+
+  <section>
+    <h2>Import / Export Block Lists</h2>
+    <div class="btn-group">
+      <button id="btn-export">Export Rules</button>
+      <button id="btn-import" class="secondary">Import Rules</button>
+      <input type="file" id="file-import" accept=".json" style="display:none">
     </div>
   </section>
 

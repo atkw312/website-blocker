@@ -13,6 +13,7 @@ importScripts("storage.js", "rules.js");
 const NATIVE_HOST = "com.focusblocker.native";
 const LOG_PREFIX = "[FocusBlocker]";
 const KEEPALIVE_ALARM = "focusblocker-keepalive";
+const SCHEDULE_CHECK_ALARM = "focusblocker-schedule-check";
 
 let nativePort = null;
 
@@ -25,6 +26,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await initializeStorage();
     console.log(LOG_PREFIX, "Storage initialized on", details.reason);
   }
+  chrome.alarms.create(SCHEDULE_CHECK_ALARM, { periodInMinutes: 1 });
 });
 
 // =========================================================================
@@ -101,6 +103,51 @@ async function unblockAllDomains() {
 }
 
 // =========================================================================
+// Schedule engine
+// =========================================================================
+
+async function checkSchedules() {
+  const active = await isSessionActive();
+  if (active) return;
+
+  const schedules = await getSchedules();
+  const now = new Date();
+  const day = now.getDay();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+  for (const schedule of schedules) {
+    if (!schedule.enabled) continue;
+    if (!schedule.days.includes(day)) continue;
+
+    const startMinutes = schedule.startHour * 60 + schedule.startMinute;
+    const endMinutes = schedule.endHour * 60 + schedule.endMinute;
+
+    if (currentMinutes >= startMinutes && currentMinutes < endMinutes) {
+      const remainingMinutes = endMinutes - currentMinutes;
+      console.log(LOG_PREFIX, `Schedule "${schedule.label}" triggered — ${remainingMinutes} min remaining.`);
+      await startFocusSession(remainingMinutes, { scheduledId: schedule.id });
+      return; // first match wins
+    }
+  }
+}
+
+// =========================================================================
+// Badge
+// =========================================================================
+
+async function updateBadge() {
+  const session = await getActiveSession();
+  if (!session.active || !session.endTime) {
+    chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+  const remaining = Math.max(0, session.endTime - Date.now());
+  const minutes = Math.ceil(remaining / 60000);
+  chrome.action.setBadgeText({ text: String(minutes) });
+  chrome.action.setBadgeBackgroundColor({ color: "#4361ee" });
+}
+
+// =========================================================================
 // Session state change handler
 // =========================================================================
 
@@ -120,6 +167,7 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
         await syncAllDomains();
       }
       chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+      updateBadge();
       console.log(LOG_PREFIX, "Session started.", strictMode ? "Strict mode — domains synced." : "Precision mode only.");
     } else if (oldActive && !newActive) {
       // Session ended
@@ -128,6 +176,21 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
         disconnectNative();
       }
       chrome.alarms.clear(KEEPALIVE_ALARM);
+      chrome.action.setBadgeText({ text: "" });
+
+      // Notification on natural expiry
+      const oldEnd = changes.focusSession.oldValue?.endTime;
+      if (oldEnd && oldEnd <= Date.now()) {
+        try {
+          chrome.notifications.create("session-complete", {
+            type: "basic",
+            title: "Focus Session Complete",
+            message: "Great work! Your focus session has ended.",
+            iconUrl: "icon128.png"
+          });
+        } catch (_) { /* icon may not exist */ }
+      }
+
       console.log(LOG_PREFIX, "Session ended — keepalive cleared.");
     }
   }
@@ -180,6 +243,11 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 // =========================================================================
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === SCHEDULE_CHECK_ALARM) {
+    await checkSchedules();
+    return;
+  }
+
   if (alarm.name !== KEEPALIVE_ALARM) return;
 
   const active = await isSessionActive();
@@ -192,6 +260,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     chrome.alarms.clear(KEEPALIVE_ALARM);
     return;
   }
+
+  updateBadge();
 
   const { strictMode } = await getSettings();
   if (!strictMode) return;
@@ -212,17 +282,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // =========================================================================
 
 (async () => {
+  // Ensure schedule check alarm is always running
+  chrome.alarms.create(SCHEDULE_CHECK_ALARM, { periodInMinutes: 1 });
+
   const active = await isSessionActive();
-  if (!active) return;
+  if (active) {
+    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+    updateBadge();
 
-  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
-
-  const { strictMode } = await getSettings();
-  if (strictMode) {
-    console.log(LOG_PREFIX, "Startup: active session + strict mode, reconnecting...");
-    connectNative();
-    await syncAllDomains();
+    const { strictMode } = await getSettings();
+    if (strictMode) {
+      console.log(LOG_PREFIX, "Startup: active session + strict mode, reconnecting...");
+      connectNative();
+      await syncAllDomains();
+    } else {
+      console.log(LOG_PREFIX, "Startup: active session, precision mode only.");
+    }
   } else {
-    console.log(LOG_PREFIX, "Startup: active session, precision mode only.");
+    await checkSchedules();
   }
 })();
