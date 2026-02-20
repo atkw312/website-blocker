@@ -21,9 +21,9 @@ let nativePort = null;
 // =========================================================================
 
 chrome.runtime.onInstalled.addListener(async (details) => {
-  if (details.reason === "install") {
+  if (details.reason === "install" || details.reason === "update") {
     await initializeStorage();
-    console.log(LOG_PREFIX, "Storage initialized on first install.");
+    console.log(LOG_PREFIX, "Storage initialized on", details.reason);
   }
 });
 

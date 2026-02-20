@@ -45,6 +45,34 @@
       cursor: pointer;
     }
     #strict-toggle input { margin: 0; }
+    #pin-section {
+      margin-top: 0.5rem;
+    }
+    #pin-section input {
+      width: 100%;
+      padding: 0.4rem;
+      margin-bottom: 0.4rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+    #pin-error {
+      color: #e63946;
+      font-size: 0.8rem;
+      margin-top: 0.25rem;
+    }
+    #link-options {
+      display: block;
+      text-align: center;
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      color: #4361ee;
+      cursor: pointer;
+      text-decoration: underline;
+      border: none;
+      background: none;
+      width: 100%;
+    }
   </style>
 </head>
 <body>
@@ -55,6 +83,12 @@
   </label>
   <button id="btn-start">Start Focus Session (30 min)</button>
   <button id="btn-end" class="danger">End Focus Session</button>
+  <div id="pin-section" style="display:none;">
+    <input type="password" id="pin-input" placeholder="Enter PIN" maxlength="8" inputmode="numeric">
+    <button id="btn-pin-submit">Unlock</button>
+    <p id="pin-error"></p>
+  </div>
+  <button id="link-options">Manage Block Lists &amp; Settings</button>
   <script src="storage.js"></script>
   <script src="popup.js"></script>
 </body>

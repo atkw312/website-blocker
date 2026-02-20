@@ -25,7 +25,9 @@ const DEFAULT_STORAGE = {
   },
   settings: {
     strictMode: false,
-    requireParentUnlock: false
+    requireParentUnlock: false,
+    parentPinHash: null,
+    sessionDurationMinutes: 30
   }
 };
 
@@ -35,10 +37,14 @@ const DEFAULT_STORAGE = {
  */
 async function initializeStorage() {
   const data = await chrome.storage.local.get(null);
-  const merged = { ...DEFAULT_STORAGE };
+  const merged = {};
 
   for (const key of Object.keys(DEFAULT_STORAGE)) {
-    if (data[key] !== undefined) merged[key] = data[key];
+    if (data[key] !== undefined && typeof DEFAULT_STORAGE[key] === "object" && !Array.isArray(DEFAULT_STORAGE[key])) {
+      merged[key] = { ...DEFAULT_STORAGE[key], ...data[key] };
+    } else {
+      merged[key] = data[key] !== undefined ? data[key] : DEFAULT_STORAGE[key];
+    }
   }
 
   await chrome.storage.local.set(merged);
@@ -49,6 +55,26 @@ async function initializeStorage() {
 async function getSettings() {
   const { settings } = await chrome.storage.local.get("settings");
   return settings ?? DEFAULT_STORAGE.settings;
+}
+
+/** Overwrite the entire settings object. */
+async function setSettings(settings) {
+  await chrome.storage.local.set({ settings });
+}
+
+/** Hash a PIN string using SHA-256 via Web Crypto, returns hex string. */
+async function hashPin(pin) {
+  const encoded = new TextEncoder().encode(pin);
+  const buffer = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(buffer))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** Verify a PIN against a stored SHA-256 hex hash. */
+async function verifyPin(pin, storedHash) {
+  const hash = await hashPin(pin);
+  return hash === storedHash;
 }
 
 /** Return the current blockRules object. */
@@ -89,12 +115,13 @@ async function isSessionActive() {
 
 /** Begin a new focus session lasting `durationMinutes`. */
 async function startFocusSession(durationMinutes) {
+  const settings = await getSettings();
   const now = Date.now();
   const session = {
     active: true,
     startTime: now,
     endTime: now + durationMinutes * 60 * 1000,
-    locked: false
+    locked: settings.requireParentUnlock && !!settings.parentPinHash
   };
   await chrome.storage.local.set({ focusSession: session });
   return session;

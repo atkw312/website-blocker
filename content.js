@@ -134,9 +134,45 @@
     return /youtube\.com\/(watch|shorts|live|embed)/.test(url);
   }
 
+  function isChannelPage(url) {
+    return /youtube\.com\/(@[^/?#]+|channel\/[^/?#]+)(\/|$|\?)/.test(url);
+  }
+
+  /** Extract channel identifier from a channel page URL. */
+  function getChannelPageIdentifier() {
+    const url = window.location.href;
+    const handleMatch = url.match(/youtube\.com\/@([^/?#]+)/);
+    if (handleMatch) return handleMatch[1];
+    const idMatch = url.match(/youtube\.com\/channel\/([^/?#]+)/);
+    if (idMatch) return idMatch[1];
+    return null;
+  }
+
   // =========================================================================
   // Core blocking logic
   // =========================================================================
+
+  /** Evaluate and potentially block a channel page. */
+  async function checkChannelPage() {
+    if (blocked) return;
+
+    const identifier = getChannelPageIdentifier();
+    if (!identifier) return;
+
+    const url = window.location.href;
+    if (url === lastCheckedUrl && identifier === lastCheckedIdentifiers) return;
+
+    lastCheckedUrl = url;
+    lastCheckedIdentifiers = identifier;
+
+    const { blockRules, focusSession } = await chrome.storage.local.get([
+      "blockRules",
+      "focusSession"
+    ]);
+    if (shouldBlockYouTubeChannel(identifier, blockRules?.youtube, focusSession)) {
+      showBlockOverlay();
+    }
+  }
 
   /** Evaluate and potentially block a video page. */
   async function checkVideoPage() {
@@ -197,6 +233,9 @@
 
     if (isVideoPage(url)) {
       await checkVideoPage();
+    } else if (isChannelPage(url)) {
+      await checkChannelPage();
+      await filterFeedCards();
     } else {
       await filterFeedCards();
     }
@@ -241,6 +280,17 @@
       }
     }, POLL_INTERVAL_MS);
   }
+
+  // Re-evaluate when block rules or session state change.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (changes.blockRules || changes.focusSession) {
+      lastCheckedUrl = null;
+      lastCheckedIdentifiers = null;
+      if (changes.blockRules && blocked) removeBlockOverlay();
+      checkAndBlock();
+    }
+  });
 
   init();
 })();
