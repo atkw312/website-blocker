@@ -114,23 +114,28 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 
     if (!oldActive && newActive) {
       // Session started
-      connectNative();
-      await syncAllDomains();
+      const { strictMode } = await getSettings();
+      if (strictMode) {
+        connectNative();
+        await syncAllDomains();
+      }
       chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
-      console.log(LOG_PREFIX, "Session started — domains synced, keepalive armed.");
+      console.log(LOG_PREFIX, "Session started.", strictMode ? "Strict mode — domains synced." : "Precision mode only.");
     } else if (oldActive && !newActive) {
       // Session ended
-      await unblockAllDomains();
-      disconnectNative();
+      if (nativePort) {
+        await unblockAllDomains();
+        disconnectNative();
+      }
       chrome.alarms.clear(KEEPALIVE_ALARM);
-      console.log(LOG_PREFIX, "Session ended — domains unblocked, keepalive cleared.");
+      console.log(LOG_PREFIX, "Session ended — keepalive cleared.");
     }
   }
 
   // --- Block rules changed during active session ---
   if (changes.blockRules) {
     const session = await getActiveSession();
-    if (!session.active) return;
+    if (!session.active || !nativePort) return;
 
     const oldSites = new Set(changes.blockRules.oldValue?.blockedSites ?? []);
     const newSites = new Set(changes.blockRules.newValue?.blockedSites ?? []);
@@ -142,6 +147,30 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     // Domains removed
     for (const domain of oldSites) {
       if (!newSites.has(domain)) unblockDomain(domain);
+    }
+  }
+
+  // --- strictMode toggled mid-session ---
+  if (changes.settings) {
+    const oldStrict = changes.settings.oldValue?.strictMode ?? false;
+    const newStrict = changes.settings.newValue?.strictMode ?? false;
+    if (oldStrict === newStrict) return;
+
+    const active = await isSessionActive();
+    if (!active) return;
+
+    if (newStrict) {
+      // Strict mode turned ON during active session — connect + sync
+      console.log(LOG_PREFIX, "Strict mode enabled mid-session — connecting native.");
+      connectNative();
+      await syncAllDomains();
+    } else {
+      // Strict mode turned OFF during active session — unblock + disconnect
+      console.log(LOG_PREFIX, "Strict mode disabled mid-session — disconnecting native.");
+      if (nativePort) {
+        await unblockAllDomains();
+        disconnectNative();
+      }
     }
   }
 });
@@ -156,10 +185,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const active = await isSessionActive();
   if (!active) {
     // Session expired naturally — clean up
-    disconnectNative();
+    if (nativePort) {
+      await unblockAllDomains();
+      disconnectNative();
+    }
     chrome.alarms.clear(KEEPALIVE_ALARM);
     return;
   }
+
+  const { strictMode } = await getSettings();
+  if (!strictMode) return;
 
   if (!nativePort) {
     // Port died — reconnect and resync
@@ -178,10 +213,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 (async () => {
   const active = await isSessionActive();
-  if (active) {
-    console.log(LOG_PREFIX, "Startup: active session detected, reconnecting...");
+  if (!active) return;
+
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+
+  const { strictMode } = await getSettings();
+  if (strictMode) {
+    console.log(LOG_PREFIX, "Startup: active session + strict mode, reconnecting...");
     connectNative();
     await syncAllDomains();
-    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  } else {
+    console.log(LOG_PREFIX, "Startup: active session, precision mode only.");
   }
 })();

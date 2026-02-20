@@ -35,11 +35,24 @@
     }
     button:hover { opacity: 0.9; }
     button.danger { background: #e63946; }
+    #strict-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.85rem;
+      color: #555;
+      cursor: pointer;
+    }
+    #strict-toggle input { margin: 0; }
   </style>
 </head>
 <body>
   <h2>Focus Blocker</h2>
   <div id="status">Loading…</div>
+  <label id="strict-toggle">
+    <input type="checkbox" id="chk-strict"> Strict Mode (block sites system-wide)
+  </label>
   <button id="btn-start">Start Focus Session (30 min)</button>
   <button id="btn-end" class="danger">End Focus Session</button>
   <script src="storage.js"></script>

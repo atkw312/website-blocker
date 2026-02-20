@@ -53,6 +53,14 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: Register auto-launch on Windows startup (restore mode)
+echo Registering startup entry for restore mode...
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "FocusBlockerNative" /t REG_SZ /d "\"%EXE_PATH%\" restore" /f
+
+if %errorlevel% neq 0 (
+    echo WARNING: Failed to register startup entry. Auto-restore on reboot will not work.
+)
+
 echo.
 echo Done! Native messaging host registered successfully.
 echo.
@@ -60,5 +68,6 @@ echo   Host name:    com.focusblocker.native
 echo   Manifest:     %MANIFEST_PATH%
 echo   Executable:   %EXE_PATH%
 echo   Extension ID: %EXT_ID%
+echo   Startup:      focus-blocker-native.exe restore (on login)
 echo.
 echo Reload your extension at chrome://extensions and you're good to go.

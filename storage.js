@@ -45,6 +45,12 @@ async function initializeStorage() {
   return merged;
 }
 
+/** Return the current settings object. */
+async function getSettings() {
+  const { settings } = await chrome.storage.local.get("settings");
+  return settings ?? DEFAULT_STORAGE.settings;
+}
+
 /** Return the current blockRules object. */
 async function getBlockRules() {
   const { blockRules } = await chrome.storage.local.get("blockRules");

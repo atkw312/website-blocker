@@ -8,11 +8,16 @@
 const statusEl = document.getElementById("status");
 const btnStart = document.getElementById("btn-start");
 const btnEnd = document.getElementById("btn-end");
+const chkStrict = document.getElementById("chk-strict");
 
 /** Render the current session state into the popup. */
 async function renderStatus() {
   const session = await getActiveSession();
   const active = await isSessionActive();
+  const settings = await getSettings();
+
+  chkStrict.checked = settings.strictMode;
+  chkStrict.disabled = active;
 
   if (active) {
     const remaining = Math.max(0, session.endTime - Date.now());
@@ -32,6 +37,12 @@ async function renderStatus() {
 btnStart.addEventListener("click", async () => {
   await startFocusSession(30);
   renderStatus();
+});
+
+chkStrict.addEventListener("change", async () => {
+  const settings = await getSettings();
+  settings.strictMode = chkStrict.checked;
+  await chrome.storage.local.set({ settings });
 });
 
 btnEnd.addEventListener("click", async () => {

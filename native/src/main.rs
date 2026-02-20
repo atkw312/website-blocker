@@ -6,6 +6,7 @@
 //! Usage:
 //!   focus-blocker-native          # Native messaging mode (launched by Chrome)
 //!   focus-blocker-native setup    # Interactive first-time password setup
+//!   focus-blocker-native restore  # Re-apply persisted blocks on boot
 //!
 //! # TODO — Installer integration
 //!
@@ -35,6 +36,8 @@ mod watchdog;
 use serde_json::json;
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use thiserror::Error;
 
 // =========================================================================
@@ -69,6 +72,7 @@ pub enum AppError {
 fn main() {
     let result = match std::env::args().nth(1).as_deref() {
         Some("setup") => run_setup(),
+        Some("restore") => run_restore(),
         _ => run_native_messaging(),
     };
 
@@ -127,6 +131,49 @@ fn prompt(label: &str) -> Result<String, AppError> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
+}
+
+// =========================================================================
+// Restore mode — re-apply persisted blocks on boot
+// =========================================================================
+
+fn run_restore() -> Result<(), AppError> {
+    let cfg = config::load()?;
+
+    if cfg.blocked_domains.is_empty() {
+        eprintln!("[FocusBlocker] Restore: no persisted blocks, exiting.");
+        return Ok(());
+    }
+
+    eprintln!(
+        "[FocusBlocker] Restore: re-applying {} domain(s).",
+        cfg.blocked_domains.len()
+    );
+    hosts_manager::apply(&cfg.blocked_domains)?;
+
+    // Start watchdog to guard against tampering.
+    let blocked = Arc::new(Mutex::new(cfg.blocked_domains));
+    let _watchdog = watchdog::start(Arc::clone(&blocked));
+
+    // Poll config file every 10s. When the native messaging instance clears
+    // blocked_domains (session ended), clean up and exit.
+    loop {
+        thread::sleep(Duration::from_secs(10));
+
+        let current = config::load()?;
+        if current.blocked_domains.is_empty() {
+            eprintln!("[FocusBlocker] Restore: domains cleared, cleaning up.");
+            hosts_manager::apply(&[])?;
+            break;
+        }
+
+        // Sync in-memory state so watchdog uses the latest list.
+        if let Ok(mut guard) = blocked.lock() {
+            *guard = current.blocked_domains;
+        }
+    }
+
+    Ok(())
 }
 
 // =========================================================================
