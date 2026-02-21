@@ -10,3 +10,7 @@ serde_json = "1"
 argon2 = { version = "0.5", features = ["std"] }
 directories = "5"
 thiserror = "1"
+fs2 = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

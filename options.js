@@ -129,6 +129,23 @@ function sanitizeDomain(value) {
 }
 
 // =========================================================================
+// Block all YouTube toggle
+// =========================================================================
+
+const chkBlockAllYoutube = document.getElementById("chk-block-all-youtube");
+
+(async () => {
+  const settings = await getSettings();
+  chkBlockAllYoutube.checked = settings.blockAllYouTube ?? false;
+})();
+
+chkBlockAllYoutube.addEventListener("change", async () => {
+  const settings = await getSettings();
+  settings.blockAllYouTube = chkBlockAllYoutube.checked;
+  await setSettings(settings);
+});
+
+// =========================================================================
 // Initialize lists
 // =========================================================================
 
@@ -160,6 +177,23 @@ setupList({
   getItems: getBlockedSites,
   setItems: setBlockedSites,
   sanitize: sanitizeDomain
+});
+
+// =========================================================================
+// YouTube fallback toggle
+// =========================================================================
+
+const chkYoutubeFallback = document.getElementById("chk-youtube-fallback");
+
+(async () => {
+  const settings = await getSettings();
+  chkYoutubeFallback.checked = settings.blockYoutubeFallback ?? false;
+})();
+
+chkYoutubeFallback.addEventListener("change", async () => {
+  const settings = await getSettings();
+  settings.blockYoutubeFallback = chkYoutubeFallback.checked;
+  await setSettings(settings);
 });
 
 // =========================================================================

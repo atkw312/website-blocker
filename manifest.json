@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Focus Blocker",
-  "version": "1.4.0",
+  "version": "1.5.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAphOEljcvVW8iVsdL0dbfFxIlb/7b+3Jb6qYvbzlnsAaOXcQolQJsHFRluPL0qhk37rAulkNWTjyyfQbxwOjrIkGpElQzD3Q6OSzfReL9ykFX70ym5qpTthK2Y7cLP95xwGdg8+1umQdTS/qiR6EgA4cYRAKYCdK0FRu436UAHScHI2KGR7A0YY7V2lNixmO9cppIEixtm8i0dZNPwThhL9BkV/BZjKMyF52XVoyhkX+zp2oJeRbB7P4SW+pnODYfta1PIyfYnImyQ+AxQ/daGIKLjTsGbw2Z43KFTu7Kv17PbruiFzNGG78E6mQ10ZmxnDbqhEdwyMdBmxXyOQhENQIDAQAB",
   "description": "Precision YouTube channel blocker with focus session management.",
   "permissions": [
     "storage",

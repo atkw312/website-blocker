@@ -165,11 +165,13 @@
     lastCheckedUrl = url;
     lastCheckedIdentifiers = identifier;
 
-    const { blockRules, focusSession } = await chrome.storage.local.get([
+    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
       "blockRules",
-      "focusSession"
+      "focusSession",
+      "settings"
     ]);
-    if (shouldBlockYouTubeChannel(identifier, blockRules?.youtube, focusSession)) {
+    const blockAll = settings?.blockAllYouTube ?? false;
+    if (shouldBlockYouTubeChannel(identifier, blockRules?.youtube, focusSession, blockAll)) {
       showBlockOverlay();
     }
   }
@@ -188,27 +190,31 @@
     lastCheckedUrl = url;
     lastCheckedIdentifiers = idKey;
 
-    const { blockRules, focusSession } = await chrome.storage.local.get([
+    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
       "blockRules",
-      "focusSession"
+      "focusSession",
+      "settings"
     ]);
-    if (shouldBlockYouTubeChannel(identifiers, blockRules?.youtube, focusSession)) {
+    const blockAll = settings?.blockAllYouTube ?? false;
+    if (shouldBlockYouTubeChannel(identifiers, blockRules?.youtube, focusSession, blockAll)) {
       showBlockOverlay();
     }
   }
 
   /** Hide individual video cards from blocked channels on feed/search pages. */
   async function filterFeedCards() {
-    const { blockRules, focusSession } = await chrome.storage.local.get([
+    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
       "blockRules",
-      "focusSession"
+      "focusSession",
+      "settings"
     ]);
+    const blockAll = settings?.blockAllYouTube ?? false;
 
     document.querySelectorAll(CARD_SELECTORS).forEach((card) => {
       const channelId = getCardChannelId(card);
       if (!channelId) return;
 
-      if (shouldBlockYouTubeChannel(channelId, blockRules?.youtube, focusSession)) {
+      if (shouldBlockYouTubeChannel(channelId, blockRules?.youtube, focusSession, blockAll)) {
         card.classList.add("focus-blocker-hidden");
       } else {
         card.classList.remove("focus-blocker-hidden");

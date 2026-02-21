@@ -179,6 +179,19 @@
   </div>
 
   <section>
+    <h2>YouTube Blocking Mode</h2>
+    <div class="setting-row">
+      <label>
+        <input type="checkbox" id="chk-block-all-youtube">
+        Block all YouTube channels except allowed list
+      </label>
+    </div>
+    <p style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
+      When enabled, every YouTube channel is blocked during focus sessions unless it appears in the allowed list below.
+    </p>
+  </section>
+
+  <section>
     <h2>YouTube Blocked Channels</h2>
     <div class="input-row">
       <input type="text" id="input-blocked-channels" placeholder="Channel ID or @handle">
@@ -203,6 +216,20 @@
       <button id="btn-add-blocked-sites">Add</button>
     </div>
     <ul id="list-blocked-sites"></ul>
+  </section>
+
+  <section>
+    <h2>Cross-Browser YouTube Blocking</h2>
+    <div class="setting-row">
+      <label>
+        <input type="checkbox" id="chk-youtube-fallback">
+        Block YouTube entirely during focus sessions
+      </label>
+    </div>
+    <p style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
+      When enabled, youtube.com is blocked system-wide via the hosts file during focus sessions.
+      Use this for browsers without the extension (Firefox, Safari, etc.).
+    </p>
   </section>
 
   <section>

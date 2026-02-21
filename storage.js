@@ -28,7 +28,9 @@ const DEFAULT_STORAGE = {
     strictMode: false,
     requireParentUnlock: false,
     parentPinHash: null,
-    sessionDurationMinutes: 30
+    sessionDurationMinutes: 30,
+    blockYoutubeFallback: false,
+    blockAllYouTube: false
   },
   schedules: [],
   // { id, label, days: [0-6], startHour, startMinute, endHour, endMinute, enabled }
@@ -122,8 +124,52 @@ async function isSessionActive() {
   return true;
 }
 
-/** Begin a new focus session lasting `durationMinutes`. */
+/**
+ * Start a focus session by routing through the background service worker,
+ * which forwards to the native app for cross-profile sync.
+ */
 async function startFocusSession(durationMinutes, { scheduledId } = {}) {
+  // In content script context, chrome.runtime.sendMessage goes to background.
+  // In background context, handleStartSession is called directly.
+  if (typeof chrome.runtime.sendMessage === "function" && typeof handleStartSession === "undefined") {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: "startSession", durationMinutes, scheduledId: scheduledId ?? null },
+        (response) => resolve(response)
+      );
+    });
+  }
+  // Fallback: direct local write (background context or native unavailable)
+  return startFocusSessionLocal(durationMinutes, { scheduledId });
+}
+
+/**
+ * End the current focus session by routing through the background service worker,
+ * which forwards to the native app for cross-profile sync.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.parentApproved - True if parent PIN was verified
+ * @param {string}  opts.parentPin      - PIN to send to native for verification
+ * @param {boolean} opts.natural        - True if session expired naturally
+ * @returns {Promise<object>} Response from native app, or { status: "OK" } on local fallback
+ */
+async function endFocusSession({ parentApproved = false, parentPin = "", natural = false } = {}) {
+  if (typeof chrome.runtime.sendMessage === "function" && typeof handleEndSession === "undefined") {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: "endSession", parentApproved, parentPin, natural },
+        (response) => resolve(response)
+      );
+    });
+  }
+  // Fallback: direct local write
+  return endFocusSessionLocal({ parentApproved, natural });
+}
+
+// ---- Local fallback implementations (used by background.js when native is unavailable) ----
+
+/** Begin a new focus session locally (direct storage write). */
+async function startFocusSessionLocal(durationMinutes, { scheduledId } = {}) {
   const settings = await getSettings();
   const now = Date.now();
   const session = {
@@ -138,12 +184,10 @@ async function startFocusSession(durationMinutes, { scheduledId } = {}) {
 }
 
 /**
- * End the current focus session.
+ * End the current focus session locally (direct storage write).
  * Returns true if ended successfully, false if the session is locked.
- * Pass { parentApproved: true } to override a lock.
- * Pass { natural: true } when the timer expires — bypasses lock and marks as completed naturally.
  */
-async function endFocusSession({ parentApproved = false, natural = false } = {}) {
+async function endFocusSessionLocal({ parentApproved = false, natural = false } = {}) {
   const session = await getActiveSession();
   if (!session.active) return true;
   if (!natural && session.locked && !parentApproved) return false;

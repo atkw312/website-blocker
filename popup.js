@@ -77,17 +77,16 @@ btnPinSubmit.addEventListener("click", async () => {
   const pin = pinInput.value;
   if (!pin) return;
 
-  const settings = await getSettings();
-  const valid = await verifyPin(pin, settings.parentPinHash);
+  // Send PIN to background → native app for verification
+  const result = await endFocusSession({ parentApproved: true, parentPin: pin });
 
-  if (!valid) {
-    pinError.textContent = "Incorrect PIN.";
+  if (result && result.status === "ERROR") {
+    pinError.textContent = result.message || "Incorrect PIN.";
     pinInput.value = "";
     pinInput.focus();
     return;
   }
 
-  await endFocusSession({ parentApproved: true });
   pinSection.style.display = "none";
   pinInput.value = "";
   pinError.textContent = "";
