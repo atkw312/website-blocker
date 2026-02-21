@@ -42,7 +42,7 @@
     async function updateCountdown() {
       const session = await getActiveSession();
 
-      if (!session.active) {
+      if (!session.mode || session.mode === "off") {
         heading.textContent = "Session Has Ended";
         heading.className = "ended";
         message.textContent = "You may close this page.";

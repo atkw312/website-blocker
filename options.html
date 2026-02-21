@@ -91,6 +91,18 @@
       align-items: center;
       gap: 0.4rem;
     }
+    .radio-group {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .radio-group label {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
     .btn-group {
       display: flex;
       gap: 0.5rem;
@@ -179,15 +191,33 @@
   </div>
 
   <section>
+    <h2>Default Session Mode</h2>
+    <div class="radio-group">
+      <label>
+        <input type="radio" name="default-mode" value="precision" id="radio-precision">
+        Precision
+      </label>
+      <label>
+        <input type="radio" name="default-mode" value="strict" id="radio-strict">
+        Strict
+      </label>
+    </div>
+    <p style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
+      <strong>Precision:</strong> Blocks specific YouTube channels via the extension.<br>
+      <strong>Strict:</strong> Blocks YouTube system-wide via the hosts file (works across all browsers).
+    </p>
+  </section>
+
+  <section>
     <h2>YouTube Blocking Mode</h2>
     <div class="setting-row">
       <label>
-        <input type="checkbox" id="chk-block-all-youtube">
+        <input type="checkbox" id="chk-block-all-channels">
         Block all YouTube channels except allowed list
       </label>
     </div>
     <p style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
-      When enabled, every YouTube channel is blocked during focus sessions unless it appears in the allowed list below.
+      When enabled, every YouTube channel is blocked during precision mode sessions unless it appears in the allowed list below.
     </p>
   </section>
 
@@ -216,20 +246,6 @@
       <button id="btn-add-blocked-sites">Add</button>
     </div>
     <ul id="list-blocked-sites"></ul>
-  </section>
-
-  <section>
-    <h2>Cross-Browser YouTube Blocking</h2>
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="chk-youtube-fallback">
-        Block YouTube entirely during focus sessions
-      </label>
-    </div>
-    <p style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
-      When enabled, youtube.com is blocked system-wide via the hosts file during focus sessions.
-      Use this for browsers without the extension (Firefox, Safari, etc.).
-    </p>
   </section>
 
   <section>

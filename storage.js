@@ -3,6 +3,10 @@
  *
  * All persistent state lives in chrome.storage.local.
  * Schema is preserved for forward-compatibility with the native desktop app.
+ *
+ * Mode-based state machine (v2):
+ *   focusSession.mode: "off" | "precision" | "strict"
+ *   settings.defaultMode: "precision" | "strict"
  */
 
 const DEFAULT_STORAGE = {
@@ -18,19 +22,18 @@ const DEFAULT_STORAGE = {
     blockedSites: []
   },
   focusSession: {
-    active: false,
+    mode: "off",
     startTime: null,
     endTime: null,
     locked: false,
     scheduledId: null
   },
   settings: {
-    strictMode: false,
+    defaultMode: "precision",
+    blockAllChannels: false,
     requireParentUnlock: false,
     parentPinHash: null,
-    sessionDurationMinutes: 30,
-    blockYoutubeFallback: false,
-    blockAllYouTube: false
+    sessionDurationMinutes: 30
   },
   schedules: [],
   // { id, label, days: [0-6], startHour, startMinute, endHour, endMinute, enabled }
@@ -46,7 +49,8 @@ const DEFAULT_STORAGE = {
 
 /**
  * Seed storage with defaults if no data exists yet.
- * Called once on extension install.
+ * Called once on extension install/update.
+ * Also runs v2 migration for existing installs.
  */
 async function initializeStorage() {
   const data = await chrome.storage.local.get(null);
@@ -61,7 +65,57 @@ async function initializeStorage() {
   }
 
   await chrome.storage.local.set(merged);
+
+  // Run v2 migration after merging defaults
+  await migrateStorageV2();
+
   return merged;
+}
+
+/**
+ * Migrate from boolean-based schema (v1) to mode-based schema (v2).
+ *
+ * Old → New:
+ *   focusSession.active (bool)       → focusSession.mode ("off"|"precision"|"strict")
+ *   settings.strictMode (bool)       → settings.defaultMode ("precision"|"strict")
+ *   settings.blockAllYouTube (bool)   → settings.blockAllChannels (bool)
+ *   settings.blockYoutubeFallback     → REMOVED
+ */
+async function migrateStorageV2() {
+  const data = await chrome.storage.local.get(["focusSession", "settings"]);
+  const session = data.focusSession ?? {};
+  const settings = data.settings ?? {};
+
+  // Already migrated if mode field exists
+  if (session.mode !== undefined) return;
+
+  const updates = {};
+
+  // Migrate focusSession
+  const wasActive = session.active ?? false;
+  const wasStrict = settings.strictMode ?? false;
+  let mode = "off";
+  if (wasActive && wasStrict) mode = "strict";
+  else if (wasActive) mode = "precision";
+
+  updates.focusSession = {
+    mode,
+    startTime: session.startTime ?? null,
+    endTime: session.endTime ?? null,
+    locked: session.locked ?? false,
+    scheduledId: session.scheduledId ?? null
+  };
+
+  // Migrate settings
+  updates.settings = {
+    defaultMode: wasStrict ? "strict" : "precision",
+    blockAllChannels: settings.blockAllYouTube ?? false,
+    requireParentUnlock: settings.requireParentUnlock ?? false,
+    parentPinHash: settings.parentPinHash ?? null,
+    sessionDurationMinutes: settings.sessionDurationMinutes ?? 30
+  };
+
+  await chrome.storage.local.set(updates);
 }
 
 /** Return the current settings object. */
@@ -109,15 +163,26 @@ async function getActiveSession() {
 
 /**
  * Check whether a focus session is currently running.
- * Auto-expires sessions whose endTime has passed.
- * Natural expiry bypasses the lock — the session simply ran out.
+ * Returns true if mode is "precision" or "strict" and not expired.
+ *
+ * Expiry detection triggers transitionMode via background message.
  */
 async function isSessionActive() {
   const session = await getActiveSession();
-  if (!session.active) return false;
+  if (!session.mode || session.mode === "off") return false;
 
   if (session.endTime && Date.now() >= session.endTime) {
-    await endFocusSession({ natural: true });
+    // Route through background to handle proper transition
+    if (typeof chrome.runtime.sendMessage === "function") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            { action: "endSession", natural: true },
+            (response) => resolve(response)
+          );
+        });
+      } catch (_) { /* background may not be ready */ }
+    }
     return false;
   }
 
@@ -125,92 +190,39 @@ async function isSessionActive() {
 }
 
 /**
- * Start a focus session by routing through the background service worker,
- * which forwards to the native app for cross-profile sync.
+ * Start a focus session by routing through the background service worker.
  */
 async function startFocusSession(durationMinutes, { scheduledId } = {}) {
-  // In content script context, chrome.runtime.sendMessage goes to background.
-  // In background context, handleStartSession is called directly.
-  if (typeof chrome.runtime.sendMessage === "function" && typeof handleStartSession === "undefined") {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { action: "startSession", durationMinutes, scheduledId: scheduledId ?? null },
-        (response) => resolve(response)
-      );
-    });
-  }
-  // Fallback: direct local write (background context or native unavailable)
-  return startFocusSessionLocal(durationMinutes, { scheduledId });
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "startSession", durationMinutes, scheduledId: scheduledId ?? null },
+      (response) => resolve(response)
+    );
+  });
 }
 
 /**
- * End the current focus session by routing through the background service worker,
- * which forwards to the native app for cross-profile sync.
- *
- * @param {object} opts
- * @param {boolean} opts.parentApproved - True if parent PIN was verified
- * @param {string}  opts.parentPin      - PIN to send to native for verification
- * @param {boolean} opts.natural        - True if session expired naturally
- * @returns {Promise<object>} Response from native app, or { status: "OK" } on local fallback
+ * End the current focus session by routing through the background service worker.
  */
 async function endFocusSession({ parentApproved = false, parentPin = "", natural = false } = {}) {
-  if (typeof chrome.runtime.sendMessage === "function" && typeof handleEndSession === "undefined") {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage(
-        { action: "endSession", parentApproved, parentPin, natural },
-        (response) => resolve(response)
-      );
-    });
-  }
-  // Fallback: direct local write
-  return endFocusSessionLocal({ parentApproved, natural });
-}
-
-// ---- Local fallback implementations (used by background.js when native is unavailable) ----
-
-/** Begin a new focus session locally (direct storage write). */
-async function startFocusSessionLocal(durationMinutes, { scheduledId } = {}) {
-  const settings = await getSettings();
-  const now = Date.now();
-  const session = {
-    active: true,
-    startTime: now,
-    endTime: now + durationMinutes * 60 * 1000,
-    locked: settings.requireParentUnlock && !!settings.parentPinHash,
-    scheduledId: scheduledId ?? null
-  };
-  await chrome.storage.local.set({ focusSession: session });
-  return session;
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "endSession", parentApproved, parentPin, natural },
+      (response) => resolve(response)
+    );
+  });
 }
 
 /**
- * End the current focus session locally (direct storage write).
- * Returns true if ended successfully, false if the session is locked.
+ * Switch mode mid-session (precision ↔ strict).
  */
-async function endFocusSessionLocal({ parentApproved = false, natural = false } = {}) {
-  const session = await getActiveSession();
-  if (!session.active) return true;
-  if (!natural && session.locked && !parentApproved) return false;
-
-  // Record session history and update stats before clearing
-  const now = Date.now();
-  const actualMinutes = Math.round((now - session.startTime) / 60000);
-  const durationMinutes = Math.round((session.endTime - session.startTime) / 60000);
-
-  await recordSession({
-    startTime: session.startTime,
-    endTime: now,
-    durationMinutes,
-    actualMinutes,
-    completedNaturally: natural,
-    scheduledId: session.scheduledId ?? null
+async function switchMode(targetMode) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "switchMode", targetMode },
+      (response) => resolve(response)
+    );
   });
-  await updateStatsAfterSession(actualMinutes);
-
-  await chrome.storage.local.set({
-    focusSession: { active: false, startTime: null, endTime: null, locked: false, scheduledId: null }
-  });
-  return true;
 }
 
 // =========================================================================

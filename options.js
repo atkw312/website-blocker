@@ -1,7 +1,8 @@
 /**
  * options.js — Drives the full options/settings page.
  *
- * Manages block list CRUD, session duration config, and parental PIN controls.
+ * Manages block list CRUD, default mode selection, session duration,
+ * and parental PIN controls.
  */
 
 // =========================================================================
@@ -129,19 +130,51 @@ function sanitizeDomain(value) {
 }
 
 // =========================================================================
-// Block all YouTube toggle
+// Default mode radio
 // =========================================================================
 
-const chkBlockAllYoutube = document.getElementById("chk-block-all-youtube");
+const radioPrecision = document.getElementById("radio-precision");
+const radioStrict = document.getElementById("radio-strict");
 
 (async () => {
   const settings = await getSettings();
-  chkBlockAllYoutube.checked = settings.blockAllYouTube ?? false;
+  if (settings.defaultMode === "strict") {
+    radioStrict.checked = true;
+  } else {
+    radioPrecision.checked = true;
+  }
 })();
 
-chkBlockAllYoutube.addEventListener("change", async () => {
+radioPrecision.addEventListener("change", async () => {
+  if (radioPrecision.checked) {
+    const settings = await getSettings();
+    settings.defaultMode = "precision";
+    await setSettings(settings);
+  }
+});
+
+radioStrict.addEventListener("change", async () => {
+  if (radioStrict.checked) {
+    const settings = await getSettings();
+    settings.defaultMode = "strict";
+    await setSettings(settings);
+  }
+});
+
+// =========================================================================
+// Block all channels toggle
+// =========================================================================
+
+const chkBlockAllChannels = document.getElementById("chk-block-all-channels");
+
+(async () => {
   const settings = await getSettings();
-  settings.blockAllYouTube = chkBlockAllYoutube.checked;
+  chkBlockAllChannels.checked = settings.blockAllChannels ?? false;
+})();
+
+chkBlockAllChannels.addEventListener("change", async () => {
+  const settings = await getSettings();
+  settings.blockAllChannels = chkBlockAllChannels.checked;
   await setSettings(settings);
 });
 
@@ -177,23 +210,6 @@ setupList({
   getItems: getBlockedSites,
   setItems: setBlockedSites,
   sanitize: sanitizeDomain
-});
-
-// =========================================================================
-// YouTube fallback toggle
-// =========================================================================
-
-const chkYoutubeFallback = document.getElementById("chk-youtube-fallback");
-
-(async () => {
-  const settings = await getSettings();
-  chkYoutubeFallback.checked = settings.blockYoutubeFallback ?? false;
-})();
-
-chkYoutubeFallback.addEventListener("change", async () => {
-  const settings = await getSettings();
-  settings.blockYoutubeFallback = chkYoutubeFallback.checked;
-  await setSettings(settings);
 });
 
 // =========================================================================

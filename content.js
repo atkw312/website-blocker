@@ -1,8 +1,11 @@
 /**
  * content.js — YouTube precision blocker.
  *
- * Video pages:  full-page overlay + media kill when channel is blocked.
- * Feed pages:   individual card hiding (homepage, search, sidebar).
+ * Mode-aware dispatcher:
+ *   off:       no blocking, clean up any UI
+ *   strict:    full-page "YouTube is blocked system-wide" overlay
+ *   precision: channel-level blocking (video overlay, card hiding)
+ *
  * SPA-aware via yt-navigate-finish, MutationObserver, and polling fallback.
  */
 
@@ -17,6 +20,7 @@
   const MUTATION_DEBOUNCE_MS = 300;
 
   let blocked = false;
+  let strictOverlayShown = false;
   let lastCheckedUrl = null;
   let lastCheckedIdentifiers = null;
   let mutationTimer = null;
@@ -82,7 +86,7 @@
   // Blocking UI
   // =========================================================================
 
-  /** Full-page overlay + kill all media playback. */
+  /** Full-page overlay for precision mode — blocks a specific channel. */
   function showBlockOverlay() {
     if (blocked) return;
     blocked = true;
@@ -113,10 +117,57 @@
     document.documentElement.appendChild(overlay);
   }
 
+  /** Full-page overlay for strict mode — YouTube is blocked system-wide. */
+  function showStrictOverlay() {
+    if (strictOverlayShown) return;
+    strictOverlayShown = true;
+
+    document.querySelectorAll("video, audio").forEach((el) => {
+      try { el.pause(); el.removeAttribute("src"); el.load(); } catch { /* best effort */ }
+    });
+
+    // Remove precision overlay if present
+    const existing = document.getElementById("focus-blocker-overlay");
+    if (existing) existing.remove();
+    blocked = false;
+
+    const overlay = document.createElement("div");
+    overlay.id = "focus-blocker-strict-overlay";
+    Object.assign(overlay.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483647",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexDirection: "column",
+      background: "#1a1a2e",
+      color: "#e0e0e0",
+      fontFamily: "system-ui, sans-serif",
+      textAlign: "center",
+      padding: "2rem"
+    });
+    overlay.innerHTML =
+      '<h1 style="font-size:2rem;margin:0 0 0.5rem">YouTube is Blocked</h1>' +
+      '<p style="font-size:1.25rem;opacity:0.8;margin:0">Strict mode is active. YouTube is blocked system-wide during your focus session.</p>';
+    document.documentElement.appendChild(overlay);
+  }
+
   function removeBlockOverlay() {
     blocked = false;
     const el = document.getElementById("focus-blocker-overlay");
     if (el) el.remove();
+  }
+
+  function removeStrictOverlay() {
+    strictOverlayShown = false;
+    const el = document.getElementById("focus-blocker-strict-overlay");
+    if (el) el.remove();
+  }
+
+  function removeAllOverlays() {
+    removeBlockOverlay();
+    removeStrictOverlay();
   }
 
   /** Remove the hidden class from all previously-hidden cards. */
@@ -149,11 +200,11 @@
   }
 
   // =========================================================================
-  // Core blocking logic
+  // Core blocking logic — precision mode helpers
   // =========================================================================
 
-  /** Evaluate and potentially block a channel page. */
-  async function checkChannelPage() {
+  /** Evaluate and potentially block a channel page (precision mode). */
+  async function checkChannelPage(blockRules, blockAll) {
     if (blocked) return;
 
     const identifier = getChannelPageIdentifier();
@@ -165,19 +216,13 @@
     lastCheckedUrl = url;
     lastCheckedIdentifiers = identifier;
 
-    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
-      "blockRules",
-      "focusSession",
-      "settings"
-    ]);
-    const blockAll = settings?.blockAllYouTube ?? false;
-    if (shouldBlockYouTubeChannel(identifier, blockRules?.youtube, focusSession, blockAll)) {
+    if (shouldBlockYouTubeChannel(identifier, blockRules?.youtube, blockAll)) {
       showBlockOverlay();
     }
   }
 
-  /** Evaluate and potentially block a video page. */
-  async function checkVideoPage() {
+  /** Evaluate and potentially block a video page (precision mode). */
+  async function checkVideoPage(blockRules, blockAll) {
     if (blocked) return;
 
     const identifiers = getVideoChannelIdentifiers();
@@ -190,31 +235,18 @@
     lastCheckedUrl = url;
     lastCheckedIdentifiers = idKey;
 
-    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
-      "blockRules",
-      "focusSession",
-      "settings"
-    ]);
-    const blockAll = settings?.blockAllYouTube ?? false;
-    if (shouldBlockYouTubeChannel(identifiers, blockRules?.youtube, focusSession, blockAll)) {
+    if (shouldBlockYouTubeChannel(identifiers, blockRules?.youtube, blockAll)) {
       showBlockOverlay();
     }
   }
 
-  /** Hide individual video cards from blocked channels on feed/search pages. */
-  async function filterFeedCards() {
-    const { blockRules, focusSession, settings } = await chrome.storage.local.get([
-      "blockRules",
-      "focusSession",
-      "settings"
-    ]);
-    const blockAll = settings?.blockAllYouTube ?? false;
-
+  /** Hide individual video cards from blocked channels on feed/search pages (precision mode). */
+  async function filterFeedCards(blockRules, blockAll) {
     document.querySelectorAll(CARD_SELECTORS).forEach((card) => {
       const channelId = getCardChannelId(card);
       if (!channelId) return;
 
-      if (shouldBlockYouTubeChannel(channelId, blockRules?.youtube, focusSession, blockAll)) {
+      if (shouldBlockYouTubeChannel(channelId, blockRules?.youtube, blockAll)) {
         card.classList.add("focus-blocker-hidden");
       } else {
         card.classList.remove("focus-blocker-hidden");
@@ -222,28 +254,49 @@
     });
   }
 
-  /** Top-level dispatcher: decide what to check based on page type. */
+  // =========================================================================
+  // Top-level dispatcher — three-way mode dispatch
+  // =========================================================================
+
   async function checkAndBlock() {
     const url = window.location.href;
     if (!url.includes("youtube.com")) return;
 
-    const active = await isSessionActive();
+    const { focusSession, settings, blockRules } = await chrome.storage.local.get([
+      "focusSession",
+      "settings",
+      "blockRules"
+    ]);
 
-    // Session not active — clean up any blocking UI.
-    if (!active) {
-      if (blocked) removeBlockOverlay();
+    const mode = focusSession?.mode ?? "off";
+
+    // --- OFF: clean up any blocking UI ---
+    if (mode === "off") {
+      removeAllOverlays();
       unhideAllCards();
       lastCheckedUrl = url;
       return;
     }
 
+    // --- STRICT: show system-wide overlay on all pages ---
+    if (mode === "strict") {
+      removeBlockOverlay(); // remove precision overlay if switching
+      unhideAllCards();
+      showStrictOverlay();
+      return;
+    }
+
+    // --- PRECISION: channel-level blocking ---
+    removeStrictOverlay(); // remove strict overlay if switching
+    const blockAll = settings?.blockAllChannels ?? false;
+
     if (isVideoPage(url)) {
-      await checkVideoPage();
+      await checkVideoPage(blockRules, blockAll);
     } else if (isChannelPage(url)) {
-      await checkChannelPage();
-      await filterFeedCards();
+      await checkChannelPage(blockRules, blockAll);
+      await filterFeedCards(blockRules, blockAll);
     } else {
-      await filterFeedCards();
+      await filterFeedCards(blockRules, blockAll);
     }
   }
 
@@ -287,10 +340,10 @@
     }, POLL_INTERVAL_MS);
   }
 
-  // Re-evaluate when block rules or session state change.
+  // Re-evaluate when block rules, session state, or settings change.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.blockRules || changes.focusSession) {
+    if (changes.blockRules || changes.focusSession || changes.settings) {
       lastCheckedUrl = null;
       lastCheckedIdentifiers = null;
       if (changes.blockRules && blocked) removeBlockOverlay();

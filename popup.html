@@ -21,6 +21,26 @@
       font-size: 0.85rem;
       background: #e8e8e8;
     }
+    #mode-info {
+      margin-bottom: 0.75rem;
+      font-size: 0.8rem;
+      color: #555;
+    }
+    #mode-info .mode-label {
+      font-weight: bold;
+      color: #4361ee;
+    }
+    #link-switch-mode {
+      display: inline;
+      font-size: 0.8rem;
+      color: #4361ee;
+      cursor: pointer;
+      text-decoration: underline;
+      border: none;
+      background: none;
+      padding: 0;
+      margin-left: 0.3rem;
+    }
     button {
       display: block;
       width: 100%;
@@ -35,16 +55,6 @@
     }
     button:hover { opacity: 0.9; }
     button.danger { background: #e63946; }
-    #strict-toggle {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      margin-bottom: 0.75rem;
-      font-size: 0.85rem;
-      color: #555;
-      cursor: pointer;
-    }
-    #strict-toggle input { margin: 0; }
     #pin-section {
       margin-top: 0.5rem;
     }
@@ -78,9 +88,10 @@
 <body>
   <h2>Focus Blocker</h2>
   <div id="status">Loading…</div>
-  <label id="strict-toggle">
-    <input type="checkbox" id="chk-strict"> Strict Mode (block sites system-wide)
-  </label>
+  <div id="mode-info" style="display:none;">
+    <span class="mode-label" id="mode-label"></span>
+    <button id="link-switch-mode">Switch</button>
+  </div>
   <button id="btn-start">Start Focus Session (30 min)</button>
   <button id="btn-end" class="danger">End Focus Session</button>
   <div id="pin-section" style="display:none;">

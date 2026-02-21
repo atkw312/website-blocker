@@ -4,6 +4,12 @@
 //! via the hosts file. Acts as the single source of truth for session state,
 //! block rules, and settings — shared across all browser profiles and browsers.
 //!
+//! Mode-based state machine (v2):
+//!   session.mode: "off" | "precision" | "strict"
+//!   - off:       no enforcement
+//!   - precision: extension-only channel blocking (no hosts changes)
+//!   - strict:    hosts-level domain blocking (youtube.com + blocked_domains)
+//!
 //! Usage:
 //!   focus-blocker-native          # Native messaging mode (launched by Chrome)
 //!   focus-blocker-native setup    # Interactive first-time password setup
@@ -125,10 +131,14 @@ fn prompt(label: &str) -> Result<String, AppError> {
 fn run_restore() -> Result<(), AppError> {
     let cfg = config::load()?;
 
-    // Determine which domains to block: blocked_domains + youtube fallback
     let domains = collect_blocked_domains(&cfg);
+    let session_mode = cfg
+        .session
+        .as_ref()
+        .map_or("off", |s| s.mode.as_str())
+        .to_string();
 
-    if domains.is_empty() && cfg.session.as_ref().map_or(true, |s| !s.active) {
+    if domains.is_empty() && !config::is_mode_active(&session_mode) {
         eprintln!("[FocusBlocker] Restore: no persisted blocks and no active session, exiting.");
         return Ok(());
     }
@@ -156,7 +166,7 @@ fn run_restore() -> Result<(), AppError> {
 
         // Check for session expiry
         if let Some(ref session) = current.session {
-            if session.active {
+            if config::is_mode_active(&session.mode) {
                 if let Some(end_time) = session.end_time {
                     if config::now_ms() >= end_time {
                         eprintln!("[FocusBlocker] Restore: session expired, auto-ending.");
@@ -168,10 +178,13 @@ fn run_restore() -> Result<(), AppError> {
         }
 
         let current_domains = collect_blocked_domains(&current);
+        let current_mode = current
+            .session
+            .as_ref()
+            .map_or("off", |s| s.mode.as_str())
+            .to_string();
 
-        if current_domains.is_empty()
-            && current.session.as_ref().map_or(true, |s| !s.active)
-        {
+        if current_domains.is_empty() && !config::is_mode_active(&current_mode) {
             eprintln!("[FocusBlocker] Restore: domains cleared and no active session, cleaning up.");
             hosts_manager::apply(&[])?;
             break;
@@ -193,11 +206,12 @@ fn run_restore() -> Result<(), AppError> {
 fn auto_end_session() -> Result<(), AppError> {
     config::update(|cfg| {
         cfg.session = Some(config::SessionState {
-            active: false,
+            mode: "off".to_string(),
             start_time: None,
             end_time: None,
             locked: false,
             scheduled_id: None,
+            ..Default::default()
         });
         cfg.blocked_domains.clear();
     })?;
@@ -206,23 +220,23 @@ fn auto_end_session() -> Result<(), AppError> {
 }
 
 /// Build the full list of domains to block in the hosts file.
-/// Includes blocked_domains + youtube.com if fallback is enabled during a session.
+/// In strict mode: blocked_domains + youtube.com.
+/// In precision/off: empty (no hosts enforcement).
 fn collect_blocked_domains(cfg: &config::Config) -> Vec<String> {
-    let mut domains = cfg.blocked_domains.clone();
-
-    let session_active = cfg.session.as_ref().map_or(false, |s| s.active);
-    let fallback = cfg
-        .global_settings
+    let session_mode = cfg
+        .session
         .as_ref()
-        .map_or(false, |s| s.block_youtube_fallback);
+        .map_or("off", |s| s.mode.as_str());
 
-    if session_active && fallback {
-        let yt = "youtube.com".to_string();
-        if !domains.contains(&yt) {
-            domains.push(yt);
-        }
+    if session_mode != "strict" {
+        return vec![];
     }
 
+    let mut domains = cfg.blocked_domains.clone();
+    let yt = "youtube.com".to_string();
+    if !domains.contains(&yt) {
+        domains.push(yt);
+    }
     domains
 }
 
@@ -232,7 +246,7 @@ fn collect_blocked_domains(cfg: &config::Config) -> Vec<String> {
 
 fn run_native_messaging() -> Result<(), AppError> {
     let cfg = config::load()?;
-    let blocked = Arc::new(Mutex::new(cfg.blocked_domains.clone()));
+    let blocked = Arc::new(Mutex::new(collect_blocked_domains(&cfg)));
 
     // Background thread: re-applies hosts entries if they're tampered with.
     let _watchdog = watchdog::start(Arc::clone(&blocked));
@@ -281,6 +295,8 @@ fn handle_message(
 
         "END_SESSION" => handle_end_session(msg, blocked),
 
+        "SWITCH_MODE" => handle_switch_mode(msg, blocked),
+
         "SYNC_RULES" => handle_sync_rules(msg),
 
         "SYNC_SETTINGS" => handle_sync_settings(msg),
@@ -289,7 +305,7 @@ fn handle_message(
 
         "REGISTER_EXTENSION" => handle_register_extension(msg),
 
-        // ---- Legacy per-domain controls ----
+        // ---- Legacy per-domain controls (compat for old extension) ----
 
         "BLOCK_DOMAIN" => {
             let domain = require_field(msg, "domain")?;
@@ -301,7 +317,9 @@ fn handle_message(
             })?;
 
             let domains = collect_blocked_domains(&cfg);
-            hosts_manager::apply(&domains)?;
+            if !domains.is_empty() {
+                hosts_manager::apply(&domains)?;
+            }
 
             if let Ok(mut guard) = blocked.lock() {
                 *guard = domains;
@@ -361,7 +379,7 @@ fn handle_get_state() -> Result<(serde_json::Value, bool), AppError> {
 
     let session = cfg.session.as_ref().map(|s| {
         json!({
-            "active": s.active,
+            "mode": s.mode,
             "startTime": s.start_time,
             "endTime": s.end_time,
             "locked": s.locked,
@@ -378,8 +396,8 @@ fn handle_get_state() -> Result<(serde_json::Value, bool), AppError> {
 
     let settings = cfg.global_settings.as_ref().map(|s| {
         json!({
-            "strictMode": s.strict_mode,
-            "blockYoutubeFallback": s.block_youtube_fallback,
+            "defaultMode": s.default_mode,
+            "blockAllChannels": s.block_all_channels,
             "sessionDurationMinutes": s.session_duration_minutes,
         })
     });
@@ -407,27 +425,29 @@ fn handle_start_session(
     let duration_minutes = msg["durationMinutes"].as_u64().unwrap_or(30) as u32;
     let scheduled_id = msg["scheduledId"].as_str().map(|s| s.to_string());
     let locked = msg["locked"].as_bool().unwrap_or(false);
+    let mode = msg["mode"].as_str().unwrap_or("precision").to_string();
 
     let now = config::now_ms();
     let end_time = now + (duration_minutes as u64) * 60 * 1000;
 
     let cfg = config::update(|cfg| {
         cfg.session = Some(config::SessionState {
-            active: true,
+            mode: mode.clone(),
             start_time: Some(now),
             end_time: Some(end_time),
             locked,
             scheduled_id,
+            ..Default::default()
         });
     })?;
 
-    // Apply hosts-level blocks (blocked_domains + youtube fallback)
+    // Apply hosts-level blocks only in strict mode
     let domains = collect_blocked_domains(&cfg);
     if !domains.is_empty() {
         hosts_manager::apply(&domains)?;
-        if let Ok(mut guard) = blocked.lock() {
-            *guard = domains;
-        }
+    }
+    if let Ok(mut guard) = blocked.lock() {
+        *guard = domains;
     }
 
     let session = cfg.session.as_ref().unwrap();
@@ -435,7 +455,7 @@ fn handle_start_session(
         json!({
             "status": "OK",
             "session": {
-                "active": session.active,
+                "mode": session.mode,
                 "startTime": session.start_time,
                 "endTime": session.end_time,
                 "locked": session.locked,
@@ -461,7 +481,7 @@ fn handle_end_session(
 
     // Check if session is locked and PIN is required
     if let Some(ref session) = cfg.session {
-        if session.active && session.locked && !natural {
+        if config::is_mode_active(&session.mode) && session.locked && !natural {
             // Need to verify parent PIN
             if parent_pin.is_empty() {
                 return Ok((
@@ -485,11 +505,12 @@ fn handle_end_session(
     // End the session
     config::update(|cfg| {
         cfg.session = Some(config::SessionState {
-            active: false,
+            mode: "off".to_string(),
             start_time: None,
             end_time: None,
             locked: false,
             scheduled_id: None,
+            ..Default::default()
         });
         cfg.blocked_domains.clear();
     })?;
@@ -501,6 +522,60 @@ fn handle_end_session(
     }
 
     Ok((json!({"status": "OK", "natural": natural}), false))
+}
+
+// =========================================================================
+// SWITCH_MODE — change mode mid-session (precision ↔ strict)
+// =========================================================================
+
+fn handle_switch_mode(
+    msg: &serde_json::Value,
+    blocked: &Arc<Mutex<Vec<String>>>,
+) -> Result<(serde_json::Value, bool), AppError> {
+    let target_mode = msg["mode"].as_str().unwrap_or("");
+
+    if target_mode != "precision" && target_mode != "strict" {
+        return Ok((
+            json!({"status": "ERROR", "message": format!("Invalid mode: {target_mode}")}),
+            false,
+        ));
+    }
+
+    let cfg = config::load()?;
+
+    // Verify there's an active session to switch
+    let current_mode = cfg
+        .session
+        .as_ref()
+        .map_or("off", |s| s.mode.as_str());
+
+    if !config::is_mode_active(current_mode) {
+        return Ok((
+            json!({"status": "ERROR", "message": "No active session to switch mode."}),
+            false,
+        ));
+    }
+
+    if current_mode == target_mode {
+        return Ok((json!({"status": "OK", "mode": target_mode}), false));
+    }
+
+    // Update the mode in config
+    let target = target_mode.to_string();
+    let cfg = config::update(move |cfg| {
+        if let Some(ref mut session) = cfg.session {
+            session.mode = target.clone();
+        }
+    })?;
+
+    // Apply or clear hosts based on new mode
+    let domains = collect_blocked_domains(&cfg);
+    hosts_manager::apply(&domains)?;
+    if let Ok(mut guard) = blocked.lock() {
+        *guard = domains;
+    }
+
+    Ok((json!({"status": "OK", "mode": target_mode}), false))
 }
 
 // =========================================================================
@@ -549,11 +624,11 @@ fn handle_sync_settings(msg: &serde_json::Value) -> Result<(serde_json::Value, b
     config::update(|cfg| {
         let mut gs = cfg.global_settings.clone().unwrap_or_default();
 
-        if let Some(v) = settings["strictMode"].as_bool() {
-            gs.strict_mode = v;
+        if let Some(v) = settings["defaultMode"].as_str() {
+            gs.default_mode = v.to_string();
         }
-        if let Some(v) = settings["blockYoutubeFallback"].as_bool() {
-            gs.block_youtube_fallback = v;
+        if let Some(v) = settings["blockAllChannels"].as_bool() {
+            gs.block_all_channels = v;
         }
         if let Some(v) = settings["sessionDurationMinutes"].as_u64() {
             gs.session_duration_minutes = v as u32;

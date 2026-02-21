@@ -1,13 +1,23 @@
 /**
  * background.js — Service worker (Manifest V3).
  *
+ * Mode-based state machine orchestrator.
+ *
  * Responsibilities:
  *   1. Seed storage on first install.
  *   2. Always-on native messaging connection to focus-blocker-native.
  *   3. Poll GET_STATE every 5s and sync shared state into chrome.storage.local.
- *   4. Forward startSession/endSession from popup → native app.
+ *   4. transitionMode() dispatcher for 6 allowed transitions.
  *   5. Push rule/settings changes from storage → native app.
  *   6. Keep the service worker alive during active sessions (MV3 alarms).
+ *
+ * Transitions:
+ *   off → precision   startSession (defaultMode = precision)
+ *   off → strict      startSession (defaultMode = strict)
+ *   precision → strict   switchMode mid-session
+ *   strict → precision   switchMode mid-session
+ *   precision → off      endSession / expiry
+ *   strict → off         endSession / expiry
  */
 
 importScripts("storage.js", "rules.js");
@@ -151,8 +161,6 @@ async function pollState() {
   try {
     await syncStateFromNative(response);
   } finally {
-    // Small delay before clearing the flag to ensure storage.onChanged
-    // listeners see it before we reset.
     setTimeout(() => { syncingFromNative = false; }, 100);
   }
 }
@@ -164,19 +172,19 @@ async function pollState() {
 async function syncStateFromNative(state) {
   const updates = {};
 
-  // Session state
+  // Session state (mode-based)
   if (state.session) {
     const current = await getActiveSession();
     const native = state.session;
     if (
-      current.active !== native.active ||
+      current.mode !== (native.mode ?? "off") ||
       current.startTime !== native.startTime ||
       current.endTime !== native.endTime ||
       current.locked !== native.locked ||
       current.scheduledId !== native.scheduledId
     ) {
       updates.focusSession = {
-        active: native.active ?? false,
+        mode: native.mode ?? "off",
         startTime: native.startTime ?? null,
         endTime: native.endTime ?? null,
         locked: native.locked ?? false,
@@ -208,17 +216,17 @@ async function syncStateFromNative(state) {
     }
   }
 
-  // Settings
+  // Settings (mode-based)
   if (state.settings) {
     const current = await getSettings();
     const native = state.settings;
     let changed = false;
-    if (native.strictMode !== undefined && current.strictMode !== native.strictMode) {
-      current.strictMode = native.strictMode;
+    if (native.defaultMode !== undefined && current.defaultMode !== native.defaultMode) {
+      current.defaultMode = native.defaultMode;
       changed = true;
     }
-    if (native.blockYoutubeFallback !== undefined && current.blockYoutubeFallback !== native.blockYoutubeFallback) {
-      current.blockYoutubeFallback = native.blockYoutubeFallback;
+    if (native.blockAllChannels !== undefined && current.blockAllChannels !== native.blockAllChannels) {
+      current.blockAllChannels = native.blockAllChannels;
       changed = true;
     }
     if (native.sessionDurationMinutes !== undefined && current.sessionDurationMinutes !== native.sessionDurationMinutes) {
@@ -236,124 +244,332 @@ async function syncStateFromNative(state) {
 }
 
 // =========================================================================
-// Internal message handler — popup.js → background → native
+// Mode transition dispatcher
 // =========================================================================
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.action === "startSession") {
-    handleStartSession(msg).then(sendResponse);
-    return true; // keep channel open for async response
-  }
-  if (msg.action === "endSession") {
-    handleEndSession(msg).then(sendResponse);
-    return true;
-  }
-});
+/**
+ * Validate and dispatch a mode transition.
+ *
+ * @param {string} from       Current mode ("off"|"precision"|"strict")
+ * @param {string} to         Target mode ("off"|"precision"|"strict")
+ * @param {object} [params]   Extra params (durationMinutes, scheduledId, natural, parentPin, etc.)
+ * @returns {Promise<object>}  Result with { status, session?, error? }
+ */
+async function transitionMode(from, to, params = {}) {
+  const key = `${from}->${to}`;
+  console.log(LOG_PREFIX, `Transition: ${key}`, params);
 
-async function handleStartSession(msg) {
+  switch (key) {
+    case "off->precision":
+      return startPrecisionSession(params);
+    case "off->strict":
+      return startStrictSession(params);
+    case "precision->strict":
+      return switchToStrict();
+    case "strict->precision":
+      return switchToPrecision();
+    case "precision->off":
+      return endPrecisionSession(params);
+    case "strict->off":
+      return endStrictSession(params);
+    default:
+      console.warn(LOG_PREFIX, `Invalid transition: ${key}`);
+      return { status: "ERROR", message: `Invalid transition: ${key}` };
+  }
+}
+
+/** off → precision: extension-only channel blocking */
+async function startPrecisionSession(params) {
   const settings = await getSettings();
-  const duration = msg.durationMinutes ?? settings.sessionDurationMinutes;
+  const duration = params.durationMinutes ?? settings.sessionDurationMinutes;
   const locked = settings.requireParentUnlock && !!settings.parentPinHash;
+  const now = Date.now();
 
+  const session = {
+    mode: "precision",
+    startTime: now,
+    endTime: now + duration * 60 * 1000,
+    locked,
+    scheduledId: params.scheduledId ?? null
+  };
+
+  // Write to local storage first (content.js picks this up)
+  await chrome.storage.local.set({ focusSession: session });
+
+  // Notify native for cross-profile sync (no enforcement)
   const response = await sendNativeMessage({
     type: "START_SESSION",
+    mode: "precision",
     durationMinutes: duration,
-    scheduledId: msg.scheduledId ?? null,
+    scheduledId: params.scheduledId ?? null,
+    locked,
+  });
+
+  // If native responded with session data, use it as source of truth
+  if (response?.status === "OK" && response.session) {
+    syncingFromNative = true;
+    await chrome.storage.local.set({
+      focusSession: {
+        mode: response.session.mode ?? "precision",
+        startTime: response.session.startTime ?? session.startTime,
+        endTime: response.session.endTime ?? session.endTime,
+        locked: response.session.locked ?? session.locked,
+        scheduledId: response.session.scheduledId ?? session.scheduledId,
+      }
+    });
+    setTimeout(() => { syncingFromNative = false; }, 100);
+  }
+
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  updateBadge();
+
+  return { status: "OK", session };
+}
+
+/** off → strict: hosts-level blocking via native */
+async function startStrictSession(params) {
+  const settings = await getSettings();
+  const duration = params.durationMinutes ?? settings.sessionDurationMinutes;
+  const locked = settings.requireParentUnlock && !!settings.parentPinHash;
+
+  // Send to native FIRST (blocks hosts)
+  const response = await sendNativeMessage({
+    type: "START_SESSION",
+    mode: "strict",
+    durationMinutes: duration,
+    scheduledId: params.scheduledId ?? null,
     locked,
   });
 
   if (!response || response.status !== "OK") {
-    // Fallback: start locally if native app is unavailable
-    console.warn(LOG_PREFIX, "Native START_SESSION failed, starting locally.");
-    const session = await startFocusSessionLocal(duration, { scheduledId: msg.scheduledId });
-    return { status: "OK", session };
+    // Fallback: if native unavailable, start as precision instead
+    console.warn(LOG_PREFIX, "Native START_SESSION (strict) failed, falling back to precision.");
+    return startPrecisionSession(params);
   }
 
-  // Write the session from native response into local storage
-  if (response.session) {
-    syncingFromNative = true;
-    await chrome.storage.local.set({ focusSession: response.session });
-    setTimeout(() => { syncingFromNative = false; }, 100);
-  }
+  // Write session from native response to storage
+  const session = response.session ?? {
+    mode: "strict",
+    startTime: Date.now(),
+    endTime: Date.now() + duration * 60 * 1000,
+    locked,
+    scheduledId: params.scheduledId ?? null
+  };
 
-  return response;
+  syncingFromNative = true;
+  await chrome.storage.local.set({
+    focusSession: {
+      mode: session.mode ?? "strict",
+      startTime: session.startTime ?? null,
+      endTime: session.endTime ?? null,
+      locked: session.locked ?? false,
+      scheduledId: session.scheduledId ?? null,
+    }
+  });
+  setTimeout(() => { syncingFromNative = false; }, 100);
+
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  updateBadge();
+
+  return { status: "OK", session };
 }
 
-async function handleEndSession(msg) {
+/** precision → strict: switch mid-session */
+async function switchToStrict() {
+  // Write mode to storage first (content.js stops precision immediately)
+  const session = await getActiveSession();
+  session.mode = "strict";
+  await chrome.storage.local.set({ focusSession: session });
+
+  // Send to native (blocks hosts)
+  const response = await sendNativeMessage({
+    type: "SWITCH_MODE",
+    mode: "strict",
+  });
+
+  if (!response || response.status !== "OK") {
+    // Revert storage on failure
+    console.warn(LOG_PREFIX, "Native SWITCH_MODE (strict) failed, reverting to precision.");
+    session.mode = "precision";
+    await chrome.storage.local.set({ focusSession: session });
+    return { status: "ERROR", message: "Failed to switch to strict mode. Native app unavailable." };
+  }
+
+  return { status: "OK", mode: "strict" };
+}
+
+/** strict → precision: switch mid-session */
+async function switchToPrecision() {
+  // Send to native FIRST (unblocks hosts)
+  const response = await sendNativeMessage({
+    type: "SWITCH_MODE",
+    mode: "precision",
+  });
+
+  if (!response || response.status !== "OK") {
+    // Keep strict on failure
+    console.warn(LOG_PREFIX, "Native SWITCH_MODE (precision) failed, keeping strict.");
+    return { status: "ERROR", message: "Failed to switch to precision mode. Native app unavailable." };
+  }
+
+  // THEN write to storage (content.js starts precision)
+  const session = await getActiveSession();
+  session.mode = "precision";
+  await chrome.storage.local.set({ focusSession: session });
+
+  return { status: "OK", mode: "precision" };
+}
+
+/** precision → off: end session (no hosts cleanup needed) */
+async function endPrecisionSession(params) {
+  const session = await getActiveSession();
+
+  // Record history + stats before clearing
+  if (session.startTime) {
+    const now = Date.now();
+    const actualMinutes = Math.round((now - session.startTime) / 60000);
+    const durationMinutes = session.endTime
+      ? Math.round((session.endTime - session.startTime) / 60000)
+      : actualMinutes;
+    await recordSession({
+      startTime: session.startTime,
+      endTime: now,
+      durationMinutes,
+      actualMinutes,
+      completedNaturally: params.natural ?? false,
+      scheduledId: session.scheduledId ?? null,
+    });
+    await updateStatsAfterSession(actualMinutes);
+  }
+
+  // Clear session
+  await chrome.storage.local.set({
+    focusSession: { mode: "off", startTime: null, endTime: null, locked: false, scheduledId: null }
+  });
+
+  // Notify native (clears session state, no hosts to clean)
+  await sendNativeMessage({ type: "END_SESSION", natural: params.natural ?? false });
+
+  chrome.alarms.clear(KEEPALIVE_ALARM);
+  chrome.action.setBadgeText({ text: "" });
+
+  return { status: "OK" };
+}
+
+/** strict → off: end session (hosts cleanup via native FIRST) */
+async function endStrictSession(params) {
+  const session = await getActiveSession();
+
+  // Check lock — for non-natural endings
+  if (!params.natural && session.locked) {
+    if (!params.parentPin) {
+      return { status: "ERROR", message: "Session is locked. PIN required." };
+    }
+  }
+
+  // Send END_SESSION to native FIRST (unblocks hosts)
   const response = await sendNativeMessage({
     type: "END_SESSION",
-    natural: msg.natural ?? false,
-    parentPin: msg.parentPin ?? "",
+    natural: params.natural ?? false,
+    parentPin: params.parentPin ?? "",
   });
 
   if (!response || response.status !== "OK") {
     if (response?.message) {
       return response; // pass error (e.g. "Invalid PIN") to popup
     }
-    // Fallback: end locally if native app is unavailable
-    console.warn(LOG_PREFIX, "Native END_SESSION failed, ending locally.");
-    await endFocusSessionLocal({
-      parentApproved: msg.parentApproved ?? false,
-      natural: msg.natural ?? false,
-    });
-    return { status: "OK" };
+    // Native unavailable — still end locally but warn
+    console.warn(LOG_PREFIX, "Native END_SESSION (strict) failed, ending locally.");
   }
 
-  // Clear local session state
-  syncingFromNative = true;
-  await chrome.storage.local.set({
-    focusSession: { active: false, startTime: null, endTime: null, locked: false, scheduledId: null }
-  });
-  setTimeout(() => { syncingFromNative = false; }, 100);
-
-  // Record history locally
-  const oldSession = await getActiveSession();
-  if (oldSession.startTime) {
+  // Record history + stats
+  if (session.startTime) {
     const now = Date.now();
-    const actualMinutes = Math.round((now - oldSession.startTime) / 60000);
-    const durationMinutes = oldSession.endTime
-      ? Math.round((oldSession.endTime - oldSession.startTime) / 60000)
+    const actualMinutes = Math.round((now - session.startTime) / 60000);
+    const durationMinutes = session.endTime
+      ? Math.round((session.endTime - session.startTime) / 60000)
       : actualMinutes;
     await recordSession({
-      startTime: oldSession.startTime,
+      startTime: session.startTime,
       endTime: now,
       durationMinutes,
       actualMinutes,
-      completedNaturally: msg.natural ?? false,
-      scheduledId: oldSession.scheduledId ?? null,
+      completedNaturally: params.natural ?? false,
+      scheduledId: session.scheduledId ?? null,
     });
     await updateStatsAfterSession(actualMinutes);
   }
 
-  return response;
+  // Clear session
+  syncingFromNative = true;
+  await chrome.storage.local.set({
+    focusSession: { mode: "off", startTime: null, endTime: null, locked: false, scheduledId: null }
+  });
+  setTimeout(() => { syncingFromNative = false; }, 100);
+
+  chrome.alarms.clear(KEEPALIVE_ALARM);
+  chrome.action.setBadgeText({ text: "" });
+
+  return { status: "OK" };
 }
 
 // =========================================================================
-// Domain sync helpers (for strict mode hosts-file blocking)
+// Internal message handler — popup.js → background → transitionMode
 // =========================================================================
 
-function blockDomain(domain) {
-  sendToPort({ type: "BLOCK_DOMAIN", domain });
-}
-
-function unblockDomain(domain) {
-  sendToPort({ type: "UNBLOCK_DOMAIN", domain });
-}
-
-async function syncAllDomains() {
-  const rules = await getBlockRules();
-  const sites = rules.blockedSites ?? [];
-  for (const domain of sites) {
-    blockDomain(domain);
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "startSession") {
+    handleStartSession(msg).then(sendResponse);
+    return true;
   }
+  if (msg.action === "endSession") {
+    handleEndSession(msg).then(sendResponse);
+    return true;
+  }
+  if (msg.action === "switchMode") {
+    handleSwitchMode(msg).then(sendResponse);
+    return true;
+  }
+});
+
+async function handleStartSession(msg) {
+  const settings = await getSettings();
+  const targetMode = settings.defaultMode ?? "precision";
+  return transitionMode("off", targetMode, {
+    durationMinutes: msg.durationMinutes ?? settings.sessionDurationMinutes,
+    scheduledId: msg.scheduledId ?? null,
+  });
 }
 
-async function unblockAllDomains() {
-  const rules = await getBlockRules();
-  const sites = rules.blockedSites ?? [];
-  for (const domain of sites) {
-    unblockDomain(domain);
+async function handleEndSession(msg) {
+  const session = await getActiveSession();
+  const currentMode = session.mode ?? "off";
+
+  if (currentMode === "off") {
+    return { status: "OK" }; // already off
   }
+
+  return transitionMode(currentMode, "off", {
+    natural: msg.natural ?? false,
+    parentApproved: msg.parentApproved ?? false,
+    parentPin: msg.parentPin ?? "",
+  });
+}
+
+async function handleSwitchMode(msg) {
+  const session = await getActiveSession();
+  const currentMode = session.mode ?? "off";
+  const targetMode = msg.targetMode;
+
+  if (currentMode === "off") {
+    return { status: "ERROR", message: "No active session." };
+  }
+
+  if (currentMode === targetMode) {
+    return { status: "OK", mode: currentMode };
+  }
+
+  return transitionMode(currentMode, targetMode);
 }
 
 // =========================================================================
@@ -377,8 +593,8 @@ async function pushSettingsToNative() {
   await sendNativeMessage({
     type: "SYNC_SETTINGS",
     settings: {
-      strictMode: settings.strictMode,
-      blockYoutubeFallback: settings.blockYoutubeFallback ?? false,
+      defaultMode: settings.defaultMode ?? "precision",
+      blockAllChannels: settings.blockAllChannels ?? false,
       sessionDurationMinutes: settings.sessionDurationMinutes,
     },
   });
@@ -419,7 +635,7 @@ async function checkSchedules() {
 
 async function updateBadge() {
   const session = await getActiveSession();
-  if (!session.active || !session.endTime) {
+  if (!session.mode || session.mode === "off" || !session.endTime) {
     chrome.action.setBadgeText({ text: "" });
     return;
   }
@@ -439,17 +655,20 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   // Skip if this change came from native sync
   if (syncingFromNative) return;
 
-  // --- Focus session toggled ---
+  // --- Focus session mode changed ---
   if (changes.focusSession) {
-    const oldActive = changes.focusSession.oldValue?.active ?? false;
-    const newActive = changes.focusSession.newValue?.active ?? false;
+    const oldMode = changes.focusSession.oldValue?.mode ?? "off";
+    const newMode = changes.focusSession.newValue?.mode ?? "off";
 
-    if (!oldActive && newActive) {
+    const wasActive = oldMode !== "off";
+    const isActive = newMode !== "off";
+
+    if (!wasActive && isActive) {
       // Session started
       chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
       updateBadge();
-      console.log(LOG_PREFIX, "Session started.");
-    } else if (oldActive && !newActive) {
+      console.log(LOG_PREFIX, `Session started (${newMode}).`);
+    } else if (wasActive && !isActive) {
       // Session ended
       chrome.alarms.clear(KEEPALIVE_ALARM);
       chrome.action.setBadgeText({ text: "" });
@@ -468,26 +687,15 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
       }
 
       console.log(LOG_PREFIX, "Session ended — keepalive cleared.");
+    } else if (wasActive && isActive && oldMode !== newMode) {
+      // Mode switched mid-session
+      console.log(LOG_PREFIX, `Mode switched: ${oldMode} → ${newMode}`);
     }
   }
 
   // --- Block rules changed (user action, not sync) → push to native ---
   if (changes.blockRules) {
     pushRulesToNative();
-
-    // Also handle strict-mode domain sync for active sessions
-    const session = await getActiveSession();
-    if (session.active && nativePort) {
-      const oldSites = new Set(changes.blockRules.oldValue?.blockedSites ?? []);
-      const newSites = new Set(changes.blockRules.newValue?.blockedSites ?? []);
-
-      for (const domain of newSites) {
-        if (!oldSites.has(domain)) blockDomain(domain);
-      }
-      for (const domain of oldSites) {
-        if (!newSites.has(domain)) unblockDomain(domain);
-      }
-    }
   }
 
   // --- Settings changed (user action) → push to native ---

@@ -2,6 +2,7 @@
  * rules.js — YouTube channel rule evaluation.
  *
  * Pure functions with no direct storage access.
+ * Only called in precision mode — caller is responsible for mode gating.
  */
 
 /**
@@ -13,12 +14,10 @@
  *
  * @param {string|string[]} identifiers  UC-style IDs and/or handles.
  * @param {object|undefined} rules       blockRules.youtube object.
- * @param {object|undefined} session     focusSession object.
  * @param {boolean}          blockAll    Block all channels by default.
  * @returns {boolean}
  */
-function shouldBlockYouTubeChannel(identifiers, rules, session, blockAll = false) {
-  if (!session?.active) return false;
+function shouldBlockYouTubeChannel(identifiers, rules, blockAll = false) {
   if (!rules) return blockAll;
 
   const ids = (Array.isArray(identifiers) ? identifiers : [identifiers])
