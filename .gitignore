@@ -4,3 +4,4 @@ version notes/
 native/target/
 native/com.focusblocker.native.json
 native/build.ps1
+sumi-extension.zip

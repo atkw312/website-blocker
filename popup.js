@@ -1,131 +1,118 @@
 /**
- * popup.js — Drives the extension popup UI.
+ * popup.js — Sumi popup (v3 freemium).
  *
- * Reads focus session state from storage and lets the user start,
- * stop, or switch modes. All heavy lifting is delegated to background.js
- * via chrome.runtime.sendMessage.
+ * Toggle, duration selector, daily usage counter.
  */
 
-const statusEl = document.getElementById("status");
-const modeInfo = document.getElementById("mode-info");
-const modeLabel = document.getElementById("mode-label");
-const linkSwitchMode = document.getElementById("link-switch-mode");
-const btnStart = document.getElementById("btn-start");
-const btnEnd = document.getElementById("btn-end");
-const pinSection = document.getElementById("pin-section");
-const pinInput = document.getElementById("pin-input");
-const btnPinSubmit = document.getElementById("btn-pin-submit");
-const pinError = document.getElementById("pin-error");
-const linkOptions = document.getElementById("link-options");
+const toggleIntent = document.getElementById("toggle-intent");
+const sessionStatus = document.getElementById("session-status");
+const usageEl = document.getElementById("usage");
+const durButtons = document.querySelectorAll(".dur-btn");
 
-/** Render the current session state into the popup. */
-async function renderStatus() {
-  const session = await getActiveSession();
-  const active = await isSessionActive();
-  const settings = await getSettings();
+// =========================================================================
+// Render
+// =========================================================================
 
-  // Update start button text with configured duration
-  btnStart.textContent = `Start Focus Session (${settings.sessionDurationMinutes} min)`;
+async function render() {
+  const data = await chrome.storage.local.get([
+    "intentModeEnabled",
+    "sessionEndTime",
+    "sessionPausedRemaining",
+    "sessionDurationMinutes",
+    "dailySessionCount",
+    "lastSessionDate",
+    "isProUser"
+  ]);
 
-  if (active) {
-    const remaining = Math.max(0, session.endTime - Date.now());
-    const minutes = Math.ceil(remaining / 60000);
-    const scheduled = session.scheduledId ? " (scheduled)" : "";
-    const modeName = session.mode === "strict" ? "Strict" : "Precision";
-    statusEl.textContent = `${modeName} mode${scheduled} \u2014 ${minutes} min remaining`;
+  const enabled = data.intentModeEnabled ?? false;
+  const duration = data.sessionDurationMinutes ?? 25;
 
-    // Show mode indicator with switch link
-    modeInfo.style.display = "block";
-    modeLabel.textContent = `${modeName} mode`;
-    const otherMode = session.mode === "strict" ? "precision" : "strict";
-    const otherLabel = session.mode === "strict" ? "Precision" : "Strict";
-    linkSwitchMode.textContent = `Switch to ${otherLabel}`;
-    linkSwitchMode.dataset.targetMode = otherMode;
+  toggleIntent.checked = enabled;
 
-    btnStart.disabled = true;
-    btnEnd.disabled = false;
-    btnEnd.textContent = session.locked ? "End Session (PIN Required)" : "End Focus Session";
+  // Duration buttons
+  durButtons.forEach(btn => {
+    btn.classList.toggle("active", Number(btn.dataset.min) === duration);
+  });
+
+  // Session status
+  if (enabled) {
+    const remaining = await getRemainingMs();
+    if (remaining != null) {
+      const totalSeconds = Math.ceil(remaining / 1000);
+      const m = Math.floor(totalSeconds / 60);
+      const s = totalSeconds % 60;
+      const paused = data.sessionPausedRemaining != null;
+      const label = paused ? " (paused)" : "";
+      sessionStatus.textContent = `${m}:${String(s).padStart(2, "0")} remaining${label}`;
+      sessionStatus.style.background = "#1c1917";
+      sessionStatus.style.color = "#f7f4f0";
+      sessionStatus.style.borderColor = "rgba(247, 244, 240, 0.2)";
+    } else {
+      sessionStatus.textContent = "Session active";
+      sessionStatus.style.background = "#1c1917";
+      sessionStatus.style.color = "#f7f4f0";
+      sessionStatus.style.borderColor = "rgba(247, 244, 240, 0.2)";
+    }
   } else {
-    statusEl.textContent = "No active session.";
-    modeInfo.style.display = "none";
-    btnStart.disabled = false;
-    btnEnd.disabled = true;
-    btnEnd.textContent = "End Focus Session";
-    // Hide PIN section when no session
-    pinSection.style.display = "none";
-    pinInput.value = "";
-    pinError.textContent = "";
+    sessionStatus.textContent = "No active session";
+    sessionStatus.style.background = "#1c1917";
+    sessionStatus.style.color = "#a8a29e";
+    sessionStatus.style.borderColor = "rgba(247, 244, 240, 0.1)";
+  }
+
+  // Daily usage
+  const { used, limit } = await checkDailyLimit();
+  if (data.isProUser) {
+    usageEl.textContent = `${used} sessions used today (Pro)`;
+    usageEl.className = "";
+  } else {
+    usageEl.textContent = `${used}/${limit} sessions used today`;
+    usageEl.className = used >= limit ? "limit-reached" : "";
   }
 }
 
-btnStart.addEventListener("click", async () => {
-  const settings = await getSettings();
-  await startFocusSession(settings.sessionDurationMinutes);
-  renderStatus();
-});
+// =========================================================================
+// Toggle handler
+// =========================================================================
 
-linkSwitchMode.addEventListener("click", async () => {
-  const targetMode = linkSwitchMode.dataset.targetMode;
-  if (!targetMode) return;
+toggleIntent.addEventListener("change", async () => {
+  if (toggleIntent.checked) {
+    // Turning ON — check daily limit
+    const { allowed } = await checkDailyLimit();
+    if (!allowed) {
+      toggleIntent.checked = false;
+      sessionStatus.textContent = "You've used your 2 sessions today. Upgrade for unlimited sessions.";
+      sessionStatus.style.background = "rgba(239, 68, 68, 0.15)";
+      sessionStatus.style.color = "#ef4444";
+      sessionStatus.style.borderColor = "rgba(239, 68, 68, 0.3)";
+      return;
+    }
 
-  linkSwitchMode.textContent = "Switching...";
-  linkSwitchMode.disabled = true;
-
-  const result = await switchMode(targetMode);
-
-  if (result && result.status === "ERROR") {
-    linkSwitchMode.textContent = result.message || "Switch failed";
-    setTimeout(renderStatus, 2000);
-    return;
+    const data = await chrome.storage.local.get(["sessionDurationMinutes"]);
+    const duration = data.sessionDurationMinutes ?? 25;
+    await chrome.runtime.sendMessage({ action: "startSession", durationMinutes: duration });
+  } else {
+    // Turning OFF
+    await chrome.runtime.sendMessage({ action: "endSession" });
   }
-
-  renderStatus();
+  render();
 });
 
-btnEnd.addEventListener("click", async () => {
-  const session = await getActiveSession();
+// =========================================================================
+// Duration selector
+// =========================================================================
 
-  if (session.locked) {
-    // Show PIN input instead of ending directly
-    pinSection.style.display = "block";
-    pinInput.focus();
-    return;
-  }
-
-  await endFocusSession();
-  renderStatus();
+durButtons.forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const minutes = Number(btn.dataset.min);
+    await chrome.storage.local.set({ sessionDurationMinutes: minutes });
+    render();
+  });
 });
 
-btnPinSubmit.addEventListener("click", async () => {
-  const pin = pinInput.value;
-  if (!pin) return;
+// =========================================================================
+// Init
+// =========================================================================
 
-  // Send PIN to background → native app for verification
-  const result = await endFocusSession({ parentApproved: true, parentPin: pin });
-
-  if (result && result.status === "ERROR") {
-    pinError.textContent = result.message || "Incorrect PIN.";
-    pinInput.value = "";
-    pinInput.focus();
-    return;
-  }
-
-  pinSection.style.display = "none";
-  pinInput.value = "";
-  pinError.textContent = "";
-  renderStatus();
-});
-
-pinInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") btnPinSubmit.click();
-});
-
-linkOptions.addEventListener("click", () => {
-  chrome.runtime.openOptionsPage();
-});
-
-// Initial render.
-renderStatus();
-
-// Keep the display fresh while the popup is open.
-setInterval(renderStatus, 5000);
+render();
+setInterval(render, 1000);

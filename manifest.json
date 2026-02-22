@@ -1,34 +1,28 @@
 {
   "manifest_version": 3,
-  "name": "Focus Blocker",
-  "version": "1.5.0",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAphOEljcvVW8iVsdL0dbfFxIlb/7b+3Jb6qYvbzlnsAaOXcQolQJsHFRluPL0qhk37rAulkNWTjyyfQbxwOjrIkGpElQzD3Q6OSzfReL9ykFX70ym5qpTthK2Y7cLP95xwGdg8+1umQdTS/qiR6EgA4cYRAKYCdK0FRu436UAHScHI2KGR7A0YY7V2lNixmO9cppIEixtm8i0dZNPwThhL9BkV/BZjKMyF52XVoyhkX+zp2oJeRbB7P4SW+pnODYfta1PIyfYnImyQ+AxQ/daGIKLjTsGbw2Z43KFTu7Kv17PbruiFzNGG78E6mQ10ZmxnDbqhEdwyMdBmxXyOQhENQIDAQAB",
-  "description": "Precision YouTube channel blocker with focus session management.",
-  "permissions": [
-    "storage",
-    "nativeMessaging",
-    "alarms",
-    "notifications"
-  ],
-  "host_permissions": [
-    "https://*.youtube.com/*"
-  ],
+  "name": "Sumi",
+  "version": "3.0.0",
+  "description": "Remove algorithm traps and watch YouTube intentionally.",
+  "permissions": ["activeTab", "storage", "alarms", "scripting"],
+  "host_permissions": ["https://www.youtube.com/*"],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://*.youtube.com/*"
-      ],
-      "js": ["storage.js", "rules.js", "content.js"],
+      "matches": ["https://www.youtube.com/*"],
+      "css": ["styles.css"],
+      "js": ["storage.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
-  "options_page": "options.html",
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Focus Blocker"
+    "default_title": "Sumi"
   },
-  "icons": {}
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
